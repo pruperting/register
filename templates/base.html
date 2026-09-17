@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}project register{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a href="{{ url_for('index') }}" class="brand">project register</a>
+      <button class="ghost sm" id="prompt-btn"
+              title="Copy the end-of-session handoff prompt, with your current project slugs">copy handoff prompt</button>
+      <button class="ghost sm" id="refresh-btn">rescan vault</button>
+    </header>
+    {% block content %}{% endblock %}
+  </div>
+<script>
+async function pollJob(key, btn, orig, onDone) {
+  try {
+    const j = await (await fetch(`/api/jobs/${encodeURIComponent(key)}`)).json();
+    if (j.state === 'running') {
+      const mins = Math.floor((Date.now() - Date.parse(j.started_at)) / 60000);
+      btn.textContent = mins > 0 ? `working… ${mins}m` : 'working…';
+      setTimeout(() => pollJob(key, btn, orig, onDone), 3000);
+      return;
+    }
+    onDone(j.result || {});
+  } catch (e) {
+    btn.textContent = 'failed';
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+  }
+}
+function runJob(btn, url, key, body) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'starting…';
+  const done = (t, reload) => {
+    btn.textContent = t;
+    if (reload) setTimeout(() => location.reload(), 700);
+    else setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3500);
+  };
+  fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'},
+               body: JSON.stringify(body || {}) })
+    .then(r => {
+      if (r.status !== 202 && r.status !== 409) return done('failed to start', false);
+      pollJob(key, btn, orig, res => {
+        if (res.status === 'generated' || res.status === 'ok') return done('done ✓', true);
+        if (res.status === 'fresh') return done('already current', false);
+        done(`error: ${(res.reason || 'unknown').slice(0, 40)}`, false);
+      });
+    })
+    .catch(() => done('failed', false));
+}
+document.getElementById('prompt-btn').addEventListener('click', async (e) => {
+  const btn = e.target, orig = btn.textContent;
+  try {
+    const text = await (await fetch('/prompt')).text();
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'copied ✓';
+  } catch (err) {
+    // Clipboard API needs HTTPS or localhost; fall back to opening it.
+    window.open('/prompt', '_blank');
+    btn.textContent = 'opened';
+  }
+  setTimeout(() => { btn.textContent = orig; }, 2500);
+});
+
+document.getElementById('refresh-btn').addEventListener('click', async (e) => {
+  e.target.disabled = true; e.target.textContent = 'scanning…';
+  await fetch('/api/refresh', { method: 'POST' });
+  location.reload();
+});
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

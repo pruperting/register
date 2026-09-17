@@ -1,0 +1,36 @@
+services:
+  register:
+    # build: . means `docker compose up -d --build` actually rebuilds.
+    # Without it, --build is silently a no-op and you keep running the
+    # old image while believing you deployed.
+    build: .
+    image: register:latest
+    pull_policy: never
+    container_name: register
+    restart: unless-stopped
+    # Run as your user, not root. The container writes into a synced
+    # vault; root-owned files there cause permission trouble for
+    # Syncthing and for editing in Obsidian. Check yours: id -u; id -g
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${PORT:-5557}:5000"
+    volumes:
+      # The vault is the entire database — must be writable.
+      # Set VAULT_HOST_PATH in .env to your Obsidian vault.
+      - ${VAULT_HOST_PATH:?set VAULT_HOST_PATH in .env}:/vault
+    environment:
+      - VAULT_PATH=/vault
+      - SECRET_KEY=${SECRET_KEY:-change-me}
+      - OBSIDIAN_VAULT_NAME=${OBSIDIAN_VAULT_NAME:-Obsidian}
+      - TZ=${TZ:-Europe/London}
+      # local = Ollama, gemini = API
+      - SUMMARY_BACKEND=${SUMMARY_BACKEND:-local}
+      - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
+      - LOCAL_CHAT_MODEL=${LOCAL_CHAT_MODEL:-qwen3:30b-a3b}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-24576}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - AUTO_SUMMARY=${AUTO_SUMMARY:-true}
+      - AUTO_SUMMARY_HOUR=${AUTO_SUMMARY_HOUR:-3}
+      - AUTO_SUMMARY_MAX_PER_RUN=${AUTO_SUMMARY_MAX_PER_RUN:-5}
+# No named volumes: the app is stateless. Everything lives in the vault.

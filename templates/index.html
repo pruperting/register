@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bar">
+  {% for s in statuses %}{% if counts.get(s) %}
+    <span class="pill st-{{ s }}">{{ counts.get(s) }} {{ s }}</span>
+  {% endif %}{% endfor %}
+  {% if counts.get('unset') %}<span class="pill st-unset">{{ counts.get('unset') }} unset</span>{% endif %}
+  <span class="spacer"></span>
+  <button class="ghost sm" id="new-btn">new project</button>
+  <button class="ghost sm" id="merge-toggle">merge…</button>
+</div>
+
+{% if unfiled %}
+<div class="unfiled">
+  <div class="unfiled-head">
+    <strong>to be filed</strong>
+    <span class="dim">{{ unfiled|length }} claim{{ 's' if unfiled|length != 1 }} with no project folder</span>
+  </div>
+  <p class="hint">
+    These files name a project that doesn't exist as a folder under
+    <code>projects/</code>. Assign them to an existing project, or create one —
+    either way the file's <code>project:</code> field is rewritten. Files are
+    never moved.
+  </p>
+  {% for g in unfiled %}
+  <div class="unfiled-row" data-claimed="{{ g.claimed }}">
+    <div class="unfiled-main">
+      <code class="claim">{{ g.claimed }}</code>
+      <span class="dim">
+        {{ g.file_count }} file{{ 's' if g.file_count != 1 }}
+        {%- if g.days_ago < 9000 %} · {{ g.days_ago }}d{% endif %}
+      </span>
+      {% if g.near %}<span class="near">looks like {{ g.near }}</span>{% endif %}
+    </div>
+    <div class="unfiled-actions">
+      <select class="assign-target">
+        <option value="">assign to…</option>
+        {% for p in active %}
+          <option value="{{ p.name }}" {% if g.near == p.name %}selected{% endif %}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="ghost sm assign-btn">assign</button>
+      <button class="ghost sm create-btn" data-suggested="{{ g.suggested }}">
+        create {{ g.suggested }}
+      </button>
+    </div>
+    <details class="unfiled-files">
+      <summary>{{ g.file_count }} file{{ 's' if g.file_count != 1 }}</summary>
+      <ul class="files">
+        {% for f in g.files[:15] %}
+        <li><a href="{{ obsidian_uri(f.path) }}">{{ f.title }}</a>
+            <span class="dim">{{ f.claim_source }}</span></li>
+        {% endfor %}
+      </ul>
+    </details>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if badly_named %}
+<div class="notice">
+  {{ badly_named|length }} project folder{{ 's' if badly_named|length != 1 }} not in TitleCase:
+  {% for p in badly_named %}<code>{{ p.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+  Rename from the project page, or run <code>tidy-vault.py --apply-titlecase</code>.
+</div>
+{% endif %}
+
+{% if needs_handoff %}
+<div class="notice">
+  {{ needs_handoff|length }} project{{ 's' if needs_handoff|length != 1 }} have no handoff notes yet, so
+  summaries fall back to truncated transcripts. Drop a context summary into
+  <code>projects/&lt;name&gt;/handoffs/</code> for much better results.
+</div>
+{% endif %}
+
+<div class="merge-panel" id="merge-panel" hidden>
+  <div class="merge-row">
+    <label>merge into
+      <select id="merge-target">
+        {% for p in active %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button class="primary" id="merge-go">merge selected</button>
+    <span class="dim" id="merge-msg"></span>
+  </div>
+</div>
+
+<div class="key">
+  <span class="dot fresh"></span>&lt;2wk
+  <span class="dot warm"></span>&lt;6wk
+  <span class="dot cool"></span>&lt;4mo
+  <span class="dot cold"></span>older
+</div>
+
+<div class="grid">
+  {% for p in active %}
+  <div class="card">
+    <div class="row1">
+      <input type="checkbox" class="pick" value="{{ p.name }}" hidden>
+      <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
+      <a href="{{ url_for('detail', name=p.name) }}" class="pname">{{ p.name }}</a>
+    </div>
+    <div class="row2">
+      {% if p.status %}<span class="pill st-{{ p.status }}">{{ p.status }}</span>{% endif %}
+      <span class="dim">
+        {{ p.file_count }} file{{ 's' if p.file_count != 1 }}
+        {%- if p.handoff_count %} · {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }}{% endif %}
+        {%- if p.days_ago < 9000 %} · {{ p.days_ago }}d{% endif %}
+      </span>
+      {% if not p.has_summary %}<span class="warn">no summary</span>{% endif %}
+    </div>
+    {% if p.summary %}
+    <p class="peek">{{ p.summary | striptags | truncate(150) }}</p>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="empty">No projects found. Check the vault path, then rescan.</div>
+  {% endfor %}
+</div>
+
+{% if archived %}
+<details class="arch">
+  <summary>archived ({{ archived|length }})</summary>
+  <div class="grid">
+    {% for p in archived %}
+    <div class="card dimmed">
+      <div class="row1"><a href="{{ url_for('detail', name=p.name) }}" class="pname">{{ p.name }}</a></div>
+      <div class="row2"><span class="dim">{{ p.file_count }} files</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('new-btn').addEventListener('click', async () => {
+  const name = prompt('Project name:');
+  if (!name) return;
+  const r = await fetch('/api/create', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+  const j = await r.json();
+  if (j.status === 'ok') location.href = '/p/' + encodeURIComponent(name);
+  else alert(j.reason || 'failed');
+});
+const mt = document.getElementById('merge-toggle');
+mt.addEventListener('click', () => {
+  const panel = document.getElementById('merge-panel');
+  const show = panel.hidden;
+  panel.hidden = !show;
+  document.querySelectorAll('.pick').forEach(cb => cb.hidden = !show);
+  mt.textContent = show ? 'cancel' : 'merge…';
+});
+document.getElementById('merge-go').addEventListener('click', (e) => {
+  const target = document.getElementById('merge-target').value;
+  const sources = [...document.querySelectorAll('.pick:checked')]
+    .map(c => c.value).filter(v => v !== target);
+  const msg = document.getElementById('merge-msg');
+  if (!sources.length) { msg.textContent = 'pick at least one'; return; }
+  if (!confirm(`Merge ${sources.join(', ')} into "${target}"?\n\nFiles move on disk. Not undoable.`)) return;
+  runJob(e.target, '/api/merge', `merge:${target}`, { sources, target });
+});
+
+// ── to be filed ───────────────────────────────────────────────────
+document.querySelectorAll('.unfiled-row').forEach(row => {
+  const claimed = row.dataset.claimed;
+  const post = async (body, btn) => {
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'filing…';
+    try {
+      const r = await fetch('/api/file', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ claimed, ...body }),
+      });
+      const j = await r.json();
+      if (j.status === 'ok') { location.reload(); return; }
+      alert(j.reason || 'failed');
+    } catch (e) { alert('failed'); }
+    btn.textContent = orig; btn.disabled = false;
+  };
+  row.querySelector('.assign-btn').addEventListener('click', (e) => {
+    const target = row.querySelector('.assign-target').value;
+    if (!target) { alert('pick a project first'); return; }
+    post({ target }, e.target);
+  });
+  row.querySelector('.create-btn').addEventListener('click', (e) => {
+    const suggested = e.target.dataset.suggested;
+    const name = prompt('Create project (TitleCase):', suggested);
+    if (!name) return;
+    post({ target: name, create: true }, e.target);
+  });
+});
+</script>
+{% endblock %}

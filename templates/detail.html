@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}{{ p.name }} · project register{% endblock %}
+{% block content %}
+<div class="crumb"><a href="{{ url_for('index') }}">← all projects</a></div>
+
+<div class="phead">
+  <h1>{{ p.name }}</h1>
+  <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
+  <span class="dim">
+    {{ p.file_count }} file{{ 's' if p.file_count != 1 }} ·
+    {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }}
+    {%- if p.days_ago < 9000 %} · last activity {{ p.days_ago }}d ago{% endif %}
+  </span>
+</div>
+
+{% if p.description %}<p class="desc">{{ p.description }}</p>{% endif %}
+
+<div class="controls">
+  <label>status
+    <select id="status-sel" data-p="{{ p.name }}">
+      <option value="">unset</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if p.status == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="ghost sm" id="repo-btn" data-p="{{ p.name }}">
+    {% if p.repo %}edit repo{% else %}link repo{% endif %}
+  </button>
+  {% if p.repo %}<a href="{{ p.repo }}" class="ghost sm" target="_blank">open repo ↗</a>{% endif %}
+  <button class="ghost sm" id="rename-btn" data-p="{{ p.name }}">rename</button>
+  <button class="ghost sm" id="archive-btn" data-p="{{ p.name }}"
+          data-a="{{ '1' if p.archived else '0' }}">
+    {% if p.archived %}unarchive{% else %}archive{% endif %}
+  </button>
+</div>
+
+<section class="panel">
+  <div class="phead2">
+    <h2>status</h2>
+    {% if p.has_summary %}<span class="dim">{{ p.summary_at }} · {{ p.summary_by }}</span>
+    {% else %}<span class="warn">not generated</span>{% endif %}
+    <span class="spacer"></span>
+    <button class="ghost sm sum-btn" data-p="{{ p.name }}">
+      {% if p.has_summary %}update{% else %}generate{% endif %}
+    </button>
+    <button class="ghost sm sum-full-btn" data-p="{{ p.name }}">rebuild</button>
+    {% if p.has_summary %}
+    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/_summary.md') }}">obsidian ↗</a>
+    {% endif %}
+  </div>
+  {% if not p.handoff_count and p.file_count %}
+  <p class="notice inline">No handoff notes — summaries will use truncated
+  transcripts. Add one to <code>projects/{{ p.name }}/handoffs/</code>.</p>
+  {% endif %}
+  {% if p.summary %}<div class="md">{{ p.summary | markdown | safe }}</div>
+  {% else %}<p class="dim">Generate a summary to see where this project stands.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <div class="phead2">
+    <h2>runbook</h2>
+    {% if p.has_runbook %}<span class="dim">{{ p.runbook_at }}</span>
+    {% else %}<span class="dim">not generated</span>{% endif %}
+    <span class="spacer"></span>
+    <button class="ghost sm rb-btn" data-p="{{ p.name }}">
+      {% if p.has_runbook %}regenerate{% else %}generate{% endif %}
+    </button>
+    {% if p.has_runbook %}
+    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/RUNBOOK.md') }}">obsidian ↗</a>
+    {% endif %}
+  </div>
+  <p class="hint">Deployment steps, config and gotchas — written to
+    <code>projects/{{ p.name }}/RUNBOOK.md</code> for copying into the git repo.
+    Verify the commands before trusting them.</p>
+  {% if p.has_runbook %}
+  <details><summary>view runbook</summary><div class="md">{{ p.runbook | markdown | safe }}</div></details>
+  {% endif %}
+</section>
+
+{% if p.notes %}
+<section class="panel">
+  <h2>your notes</h2>
+  <div class="md">{{ p.notes | markdown | safe }}</div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>files</h2>
+  <ul class="files">
+    {% for f in p.files[:40] %}
+    <li>
+      {% if f.handoff %}<span class="tag">handoff</span>{% endif %}
+      <a href="{{ obsidian_uri(f.path) }}">{{ f.title }}</a>
+      <span class="dim">{{ f.source }}</span>
+    </li>
+    {% else %}
+    <li class="dim">No files filed under this project yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P = "{{ p.name }}";
+document.getElementById('status-sel').addEventListener('change', async (e) => {
+  e.target.disabled = true;
+  const r = await fetch(`/api/status/${encodeURIComponent(P)}`, { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({status: e.target.value}) });
+  (await r.json()).status === 'ok' ? location.reload() : e.target.disabled = false;
+});
+document.getElementById('repo-btn').addEventListener('click', async () => {
+  const repo = prompt('Repository URL:', "{{ p.repo }}");
+  if (repo === null) return;
+  await fetch(`/api/repo/${encodeURIComponent(P)}`, { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({repo}) });
+  location.reload();
+});
+document.getElementById('archive-btn').addEventListener('click', async (e) => {
+  const was = e.target.dataset.a === '1';
+  e.target.disabled = true;
+  await fetch(`/api/archive/${encodeURIComponent(P)}`, { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({archived: !was}) });
+  location.href = '/';
+});
+document.getElementById('rename-btn').addEventListener('click', (e) => {
+  const next = prompt(`Rename "${P}" to:`, P);
+  if (!next || next === P) return;
+  runJob(e.target, `/api/rename/${encodeURIComponent(P)}`, `rename:${P}`, { new: next });
+});
+document.querySelector('.sum-btn').addEventListener('click', (e) =>
+  runJob(e.target, `/api/summary/${encodeURIComponent(P)}`, `summary:${P}`, {}));
+document.querySelector('.sum-full-btn').addEventListener('click', (e) => {
+  if (!confirm('Rebuild the summary from all material, ignoring the existing one?')) return;
+  runJob(e.target, `/api/summary/${encodeURIComponent(P)}`, `summary:${P}`, { full: true });
+});
+document.querySelector('.rb-btn').addEventListener('click', (e) =>
+  runJob(e.target, `/api/runbook/${encodeURIComponent(P)}`, `runbook:${P}`, {}));
+</script>
+{% endblock %}

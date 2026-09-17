@@ -1,0 +1,7 @@
+Flask==3.0.3
+gunicorn==22.0.0
+python-frontmatter==1.1.0
+Markdown==3.6
+APScheduler==3.10.4
+requests==2.32.3
+google-genai==0.8.0
