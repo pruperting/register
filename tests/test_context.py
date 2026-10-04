@@ -48,6 +48,52 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(r2['status'], 'generated')
         self.assertIn('CURRENT new feature is live.', register.context_info('Demo')['context'])
 
+
+    def test_context_refuses_implicit_reference_fallback(self):
+        # Remove canonical handoffs and leave only a legacy AI conversation.
+        for path in self.handoffs.iterdir():
+            path.unlink()
+        convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
+        convo.mkdir(parents=True)
+        (convo / 'old-chat.md').write_text(
+            '---\nproject: Demo\ntitle: old chat\n---\nCURRENT secret legacy fact\n',
+            encoding='utf-8')
+        register.invalidate()
+
+        result = register.generate_context('Demo')
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('no handoff material', result['reason'])
+        self.assertFalse(register.context_info('Demo')['has_context'])
+
+    def test_explicit_bootstrap_creates_canonical_handoff_then_context(self):
+        convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
+        convo.mkdir(parents=True)
+        (convo / 'old-chat.md').write_text(
+            '---\nproject: Demo\ntitle: old chat\n---\n## What changed\n- CURRENT legacy feature works.\n',
+            encoding='utf-8')
+        register.invalidate()
+
+        result = register.bootstrap_handoff('Demo')
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(result['source_mode'], 'explicit-reference-bootstrap')
+        register.invalidate()
+        project = register.project('Demo')
+        self.assertEqual(project['handoff_count'], 1)
+        self.assertGreaterEqual(project['reference_count'], 1)
+        self.assertEqual(project['conversation_count'], 1)
+
+        ctx = register.generate_context('Demo')
+        self.assertEqual(ctx['status'], 'generated')
+        self.assertEqual(ctx['source_mode'], 'handoffs')
+        info = register.context_info('Demo')
+        self.assertEqual(info['context_source_mode'], 'handoffs')
+
+    def test_bootstrap_is_refused_when_handoff_history_exists(self):
+        self._handoff('existing.md', 'existing', '## What changed\n- CURRENT state.', 1000)
+        result = register.bootstrap_handoff('Demo')
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('already has handoff history', result['reason'])
+
     def test_explicit_correction_supersedes_matching_earlier_active_fact(self):
         docs = [
             ('old.md', '''## Environment and deployment\n- CURRENT `OLLAMA_URL=http://old:11434`'''),

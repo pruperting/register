@@ -37,8 +37,8 @@ def obsidian_uri(rel_path: str) -> str:
 
 
 # ── background jobs ─────────────────────────────────────────────────
-# Summaries take seconds from handoff docs but minutes from raw
-# transcripts, so they never run inside a request.
+# Canonical generation reads handoffs only. Explicit legacy bootstrap may
+# process larger reference material, so all generation still runs off-request.
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -184,6 +184,11 @@ def api_summary(name):
 @app.route("/api/runbook/<name>", methods=["POST"])
 def api_runbook(name):
     return _start(f"runbook:{name}", lambda: register.generate_runbook(name))
+
+
+@app.route("/api/bootstrap/<name>", methods=["POST"])
+def api_bootstrap(name):
+    return _start(f"bootstrap:{name}", lambda: register.bootstrap_handoff(name))
 
 
 @app.route("/api/context/<name>", methods=["GET", "POST"])
@@ -338,10 +343,8 @@ def api_stats():
 # Tuesday shows up Wednesday instead of the following Sunday.
 #
 # Only projects that HAVE handoff notes are refreshed automatically.
-# Transcript fallback is expensive (a 170KB export is minutes of CPU
-# prompt processing) and lower quality, so it stays a deliberate choice
-# you make from the project page, never something that happens to thirty
-# projects at 3am unasked.
+# Historical AI conversations and other reference files are never an implicit
+# fallback. Legacy material must be explicitly bootstrapped into a handoff.
 AUTO_MAX = int(os.environ.get("AUTO_SUMMARY_MAX_PER_RUN", "5"))
 
 
@@ -370,7 +373,7 @@ def scheduled_refresh():
         except Exception:
             logger.exception("auto refresh failed for %s", p["name"])
     logger.info("auto summary run complete: %d generated, %d skipped "
-                "(no handoff notes — use the project page to summarise those)",
+                "(no handoff notes — explicit bootstrap required)",
                 done, skipped_no_handoff)
 
 

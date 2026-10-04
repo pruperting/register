@@ -7,8 +7,8 @@
   <h1>{{ p.name }}</h1>
   <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
   <span class="dim">
-    {{ p.file_count }} file{{ 's' if p.file_count != 1 }} ·
-    {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }}
+    {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }} ·
+    {{ p.reference_count }} reference file{{ 's' if p.reference_count != 1 }}
     {%- if p.days_ago < 9000 %} · last activity {{ p.days_ago }}d ago{% endif %}
   </span>
 </div>
@@ -41,7 +41,7 @@
 <section class="panel">
   <div class="phead2">
     <h2>status</h2>
-    {% if p.has_summary %}<span class="dim">{{ p.summary_at }} · {{ p.summary_by }}</span>
+    {% if p.has_summary %}<span class="dim">{{ p.summary_at }} · {{ p.summary_by }} · source: {{ p.summary_source_mode }}</span>
     {% else %}<span class="warn">not generated</span>{% endif %}
     <span class="spacer"></span>
     <button class="ghost sm sum-btn" data-p="{{ p.name }}">
@@ -52,10 +52,14 @@
     <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/' + p.name + '_summary.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
-  {% if not p.handoff_count and p.file_count %}
-  <p class="notice inline"><strong>No handoff history yet.</strong>
-  Automatic context and summary refresh is paused. The handoff folder is ready at
-  <code>{{ p.rel_dir }}/handoffs/</code>.</p>
+  {% if not p.handoff_count and p.reference_count %}
+  <p class="notice inline"><strong>No canonical handoff history yet.</strong>
+  {{ p.reference_count }} historical/reference file{{ 's' if p.reference_count != 1 }}
+  {% if p.conversation_count %}({{ p.conversation_count }} AI conversation{{ 's' if p.conversation_count != 1 }}){% endif %}
+  will not be read automatically. Create a normal handoff, or explicitly bootstrap
+  the legacy material once.
+  <button class="ghost sm bootstrap-btn" data-p="{{ p.name }}">bootstrap legacy material</button>
+  </p>
   {% endif %}
   {% if p.summary %}<div class="md">{{ p.summary | markdown | safe }}</div>
   {% else %}<p class="dim">Generate a summary to see where this project stands.</p>{% endif %}
@@ -65,7 +69,7 @@
   <div class="phead2">
     <h2>AI context</h2>
     {% if p.has_context %}
-      <span class="dim">{{ p.context_at }} · {{ p.context_by }} · ~{{ p.context_tokens }} tokens · {{ 'verified' if p.context_verified else 'unverified' }}</span>
+      <span class="dim">{{ p.context_at }} · {{ p.context_by }} · ~{{ p.context_tokens }} tokens · {{ 'verified' if p.context_verified else 'unverified' }} · source: {{ p.context_source_mode }}</span>
     {% else %}<span class="warn">not generated</span>{% endif %}
     <span class="spacer"></span>
     <button class="ghost sm ctx-btn" data-p="{{ p.name }}">
@@ -78,7 +82,7 @@
     <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/' + p.name + '_CONTEXT.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
-  <p class="hint">Compact, verified project checkpoint for starting a fresh AI coding chat. New material triggers a deterministic rebuild from all immutable handoffs; explicit corrections override conflicting earlier facts.</p>
+  <p class="hint">Compact, verified project checkpoint for starting a fresh AI coding chat. Only immutable handoffs feed CTX/2; historical AI conversations and other reference files are excluded unless explicitly bootstrapped into a handoff. Explicit corrections override conflicting earlier facts.</p>
   {% if p.has_context %}
   <details><summary>view context</summary><pre class="context-pre">{{ p.context }}</pre></details>
   {% endif %}
@@ -113,7 +117,8 @@
 {% endif %}
 
 <section class="panel">
-  <h2>files</h2>
+  <h2>project material</h2>
+  <p class="hint">Handoffs are canonical evidence. Everything else is historical/reference material and is never read implicitly by CTX/2, summaries or runbooks.</p>
   <ul class="files">
     {% for f in p.files[:40] %}
     <li>
@@ -161,6 +166,11 @@ document.getElementById('rename-btn').addEventListener('click', (e) => {
   const next = prompt(`Rename "${P}" to:`, P);
   if (!next || next === P) return;
   runJob(e.target, `/api/rename/${encodeURIComponent(P)}`, `rename:${P}`, { new: next });
+});
+const bootstrapBtn = document.querySelector('.bootstrap-btn');
+if (bootstrapBtn) bootstrapBtn.addEventListener('click', (e) => {
+  if (!confirm('Create one canonical handoff from the existing historical/reference files? Original files remain reference-only.')) return;
+  runJob(e.target, `/api/bootstrap/${encodeURIComponent(P)}`, `bootstrap:${P}`, {});
 });
 document.querySelector('.sum-btn').addEventListener('click', (e) =>
   runJob(e.target, `/api/summary/${encodeURIComponent(P)}`, `summary:${P}`, {}));
