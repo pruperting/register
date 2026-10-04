@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 VAULT_PATH = Path(os.environ.get("VAULT_PATH", "/vault"))
 PROJECTS_DIR = "projects"
 ARCHIVE_DIR = "archive"
+UNPROJECTED_DIR = "_unprojected"
+RESERVED_PROJECT_DIRS = {ARCHIVE_DIR, UNPROJECTED_DIR}
 CONVERSATIONS_DIR = "ai-conversations"
 
 
@@ -83,7 +85,7 @@ def _migrate_legacy_archives(projects_root: Path) -> None:
     archive_root = projects_root / ARCHIVE_DIR
     archive_root.mkdir(parents=True, exist_ok=True)
     for src in sorted(projects_root.iterdir()):
-        if (not src.is_dir() or src.name == ARCHIVE_DIR
+        if (not src.is_dir() or src.name in RESERVED_PROJECT_DIRS
                 or src.name.startswith(".")):
             continue
         meta_path = src / "_project.md"
@@ -211,6 +213,8 @@ def _claimed_project(path: Path, meta: dict) -> tuple[str | None, str]:
     if fm:
         return fm, "frontmatter"
     if len(parts) >= 2 and parts[0] == PROJECTS_DIR:
+        if parts[1] == UNPROJECTED_DIR:
+            return None, "system"
         if parts[1] == ARCHIVE_DIR and len(parts) >= 3:
             return parts[2], "location"
         return parts[1], "location"
@@ -251,7 +255,8 @@ def _scan() -> dict:
         archive_root = pdir / ARCHIVE_DIR
 
         def add_project(d: Path, archived: bool) -> None:
-            if not d.is_dir() or d.name.startswith("."):
+            if (not d.is_dir() or d.name in RESERVED_PROJECT_DIRS
+                    or d.name.startswith(".")):
                 return
             if d.name in projects:
                 logger.error("duplicate active/archive project name: %s", d.name)
@@ -267,7 +272,7 @@ def _scan() -> dict:
             }
 
         for d in sorted(pdir.iterdir()):
-            if d.name == ARCHIVE_DIR:
+            if d.name in RESERVED_PROJECT_DIRS:
                 continue
             add_project(d, False)
         if archive_root.exists():

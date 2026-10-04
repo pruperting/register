@@ -106,3 +106,25 @@ def test_rename_archived_project_stays_archived(vault):
     assert result["status"] == "ok"
     assert not (vault / "projects" / "NewName").exists()
     assert (vault / "projects" / "archive" / "NewName").is_dir()
+
+
+def test_unprojected_system_bucket_is_not_a_project(vault):
+    d = vault / "projects" / "_unprojected"
+    d.mkdir()
+    (d / "note.md").write_text("# note\n", encoding="utf-8")
+    reg.invalidate()
+    assert "_unprojected" not in reg.all_projects()
+    assert not (d / "handoffs").exists()
+    assert "_unprojected" not in reg.unfiled_groups()
+
+
+def test_unprojected_is_never_legacy_migrated(vault):
+    d = vault / "projects" / "_unprojected"
+    d.mkdir()
+    post = frontmatter.Post("")
+    post.metadata["archived"] = True
+    (d / "_project.md").write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    reg.invalidate()
+    reg.all_projects()
+    assert d.is_dir()
+    assert not (vault / "projects" / "archive" / "_unprojected").exists()
