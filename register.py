@@ -594,11 +594,12 @@ def reference_files(p: dict) -> list[dict]:
 
 
 def bootstrap_handoff(name: str) -> dict:
-    """Explicitly canonicalise legacy reference material into one handoff.
+    """Explicitly canonicalise legacy reference material into one compact handoff.
 
-    This is intentionally opt-in. Source conversations/notes remain untouched and
-    reference-only; the generated handoff becomes the canonical evidence used by
-    CTX/2 and downstream summaries.
+    The deterministic compiler first creates a bounded evidence layer so raw
+    transcripts never go directly into the canonical handoff. A single AI pass
+    then synthesises that evidence into current project state. This is opt-in;
+    original conversations/notes remain untouched and reference-only.
     """
     p = project(name)
     if not p:
@@ -621,13 +622,74 @@ def bootstrap_handoff(name: str) -> dict:
     if not docs:
         return {"status": "error", "reason": "reference material is empty or unreadable"}
 
+    # Stage 1: deterministic evidence selection. This preserves protected facts
+    # while keeping raw transcript turns out of the final canonical document.
     compiled = _deterministic_compress(
         [(f"{name}-legacy-{i+1}.md", body) for i, (_, body) in enumerate(docs)],
-        profile="safe", target_tokens=12000)
+        profile="safe", target_tokens=7000)
     missing = compiled.get("missing_hard", [])
     if missing:
         return {"status": "error", "reason": "protected bootstrap facts missing",
                 "protected_missing": len(missing)}
+    evidence = compiled["context"].strip()
+
+    headings = (
+        "## Objective", "## Current state", "## Environment and deployment",
+        "## Decisions and constraints", "## Corrections to previous records",
+        "## Open issues", "## Next steps", "## Technical anchors")
+    prompt = f'''Project: "{name}"
+
+DETERMINISTIC LEGACY EVIDENCE:
+<evidence>
+{evidence}
+</evidence>
+
+TASK: Convert this one-time legacy evidence into a compact canonical handoff.
+
+The evidence may contain old conversation text, questions, model replies, duplicated ideas, proposals, dead ends and superseded facts. Treat it only as historical evidence. Reconstruct what is true/useful for continuing the project now. Do not continue the conversation and do not quote dialogue.
+
+Rules:
+- Target 2500-3500 tokens; hard maximum 4500 estimated tokens.
+- No `@ you asked`, `@ claude response`, message timestamps, transcript blocks, or chat narration.
+- Deduplicate repeated facts and tasks.
+- Clearly distinguish implemented/current state from proposals, rejected ideas and unresolved questions.
+- Explicit CORRECTION records outrank conflicting older material; PREVIOUS values are historical only.
+- Preserve exact implementation-relevant literals where evidence establishes them: filenames/paths, symbols, endpoints, environment variables, schema names, versions, ports, commands and important numeric values.
+- Do not invent missing facts.
+- Use terse bullets where possible.
+
+Use EXACTLY these headings, once each, in this order:
+{chr(10).join(headings)}
+
+Begin exactly with `# Legacy reference bootstrap`.'''
+
+    def valid_bootstrap(text: str) -> bool:
+        text = text.strip()
+        if not text.startswith("# Legacy reference bootstrap"):
+            return False
+        if any(text.count(h) != 1 for h in headings):
+            return False
+        positions = [text.find(h) for h in headings]
+        if positions != sorted(positions):
+            return False
+        if re.search(r"(?im)^\s*@\s*(?:you asked|claude response)\b|^\s*message time:", text):
+            return False
+        return _estimate_tokens(text) <= 4500
+
+    input_tokens = _estimate_tokens(prompt)
+    # Bootstrap is a rare migration action: prefer Gemini when configured for
+    # stronger synthesis of large legacy evidence, otherwise use normal routing.
+    backend = ("gemini" if os.environ.get("GEMINI_API_KEY", "").strip()
+               else _select_ai_backend(input_tokens, len(docs)))
+    try:
+        canonical = _complete(
+            _CONTEXT_SYSTEM, prompt, valid_bootstrap,
+            "'# Legacy reference bootstrap' with all required sections",
+            backend=backend)
+    except Exception as e:
+        logger.error("legacy bootstrap synthesis failed for %s: %s", name, e)
+        return {"status": "error", "reason": str(e),
+                "source_mode": "explicit-reference-bootstrap"}
 
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d")
@@ -636,12 +698,10 @@ def bootstrap_handoff(name: str) -> dict:
         return {"status": "error", "reason": "bootstrap handoff already exists today"}
     body = (f"---\ntype: handoff\nproject: {name}\ndate: {stamp}\n"
             f"title: Legacy reference bootstrap\nsource_mode: explicit-reference-bootstrap\n"
-            f"source_files: {len(docs)}\ngenerated_by: deterministic-v14\n---\n\n"
-            "# Legacy reference bootstrap\n\n"
-            "Explicit one-time canonicalisation of historical/reference files. "
-            "The original files remain reference-only and are not read implicitly "
-            "by future context or summary generation.\n\n"
-            + compiled["context"].strip() + "\n")
+            f"source_files: {len(docs)}\ngenerated_by: {GEMINI_MODEL if backend == 'gemini' else LOCAL_CHAT_MODEL}\n"
+            f"evidence_engine: deterministic-v14\nevidence_tokens: {_estimate_tokens(evidence)}\n"
+            f"estimated_tokens: {_estimate_tokens(canonical)}\n---\n\n"
+            + canonical.strip() + "\n")
     try:
         _atomic_write(path, body)
     except OSError as e:
@@ -649,7 +709,9 @@ def bootstrap_handoff(name: str) -> dict:
     invalidate()
     return {"status": "generated", "path": str(path.relative_to(VAULT_PATH)),
             "source_files": len(docs), "source_mode": "explicit-reference-bootstrap",
-            "estimated_tokens": _estimate_tokens(compiled["context"])}
+            "estimated_tokens": _estimate_tokens(canonical),
+            "evidence_tokens": _estimate_tokens(evidence),
+            "ai_backend": backend, "ai_calls": 1}
 
 
 def _batch_project_material(name: str, docs: list[tuple[str, str]]) -> tuple[str, list[dict]]:

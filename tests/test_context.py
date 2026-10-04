@@ -65,28 +65,102 @@ class ContextTests(unittest.TestCase):
         self.assertIn('no handoff material', result['reason'])
         self.assertFalse(register.context_info('Demo')['has_context'])
 
-    def test_explicit_bootstrap_creates_canonical_handoff_then_context(self):
+    def test_explicit_bootstrap_creates_compact_canonical_handoff_then_context(self):
         convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
         convo.mkdir(parents=True)
         (convo / 'old-chat.md').write_text(
-            '---\nproject: Demo\ntitle: old chat\n---\n## What changed\n- CURRENT legacy feature works.\n',
+            '---\nproject: Demo\ntitle: old chat\n---\n@ you asked\nmessage time: yesterday\n## What changed\n- CURRENT legacy feature works.\n',
             encoding='utf-8')
         register.invalidate()
 
-        result = register.bootstrap_handoff('Demo')
+        canonical = '''# Legacy reference bootstrap
+## Objective
+- Continue Demo.
+## Current state
+- CURRENT legacy feature works.
+## Environment and deployment
+- not documented
+## Decisions and constraints
+- not documented
+## Corrections to previous records
+none
+## Open issues
+- not documented
+## Next steps
+- Verify current runtime.
+## Technical anchors
+- `app.py`
+'''
+        seen = {}
+        old_complete = register._complete
+        register._complete = lambda system, prompt, validator, expected, **kwargs: (
+            seen.update(prompt=prompt, backend=kwargs.get('backend')) or
+            canonical if validator(canonical) else (_ for _ in ()).throw(AssertionError('invalid fixture')))
+        try:
+            result = register.bootstrap_handoff('Demo')
+        finally:
+            register._complete = old_complete
+
         self.assertEqual(result['status'], 'generated')
         self.assertEqual(result['source_mode'], 'explicit-reference-bootstrap')
+        self.assertEqual(result['ai_calls'], 1)
+        self.assertLessEqual(result['estimated_tokens'], 4500)
+        self.assertIn('DETERMINISTIC LEGACY EVIDENCE', seen['prompt'])
         register.invalidate()
         project = register.project('Demo')
         self.assertEqual(project['handoff_count'], 1)
         self.assertGreaterEqual(project['reference_count'], 1)
         self.assertEqual(project['conversation_count'], 1)
+        handoff = next(self.handoffs.iterdir()).read_text(encoding='utf-8')
+        self.assertIn('source_mode: explicit-reference-bootstrap', handoff)
+        self.assertIn('evidence_engine: deterministic-v14', handoff)
+        self.assertNotIn('@ you asked', handoff)
+        self.assertNotIn('message time:', handoff)
 
         ctx = register.generate_context('Demo')
         self.assertEqual(ctx['status'], 'generated')
         self.assertEqual(ctx['source_mode'], 'handoffs')
         info = register.context_info('Demo')
         self.assertEqual(info['context_source_mode'], 'handoffs')
+
+    def test_bootstrap_rejects_transcript_shaped_ai_output(self):
+        convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
+        convo.mkdir(parents=True)
+        (convo / 'old-chat.md').write_text(
+            '---\nproject: Demo\ntitle: old chat\n---\nCURRENT legacy feature works.\n',
+            encoding='utf-8')
+        register.invalidate()
+
+        bad = '''# Legacy reference bootstrap
+## Objective
+@ you asked
+## Current state
+- CURRENT legacy feature works.
+## Environment and deployment
+-
+## Decisions and constraints
+-
+## Corrections to previous records
+none
+## Open issues
+-
+## Next steps
+-
+## Technical anchors
+-
+'''
+        old_complete = register._complete
+        def fake_complete(system, prompt, validator, expected, **kwargs):
+            self.assertFalse(validator(bad))
+            raise RuntimeError('model produced invalid output twice')
+        register._complete = fake_complete
+        try:
+            result = register.bootstrap_handoff('Demo')
+        finally:
+            register._complete = old_complete
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('invalid output', result['reason'])
+        self.assertEqual(list(self.handoffs.iterdir()), [])
 
     def test_bootstrap_is_refused_when_handoff_history_exists(self):
         self._handoff('existing.md', 'existing', '## What changed\n- CURRENT state.', 1000)
