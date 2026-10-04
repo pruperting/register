@@ -237,5 +237,66 @@ none
         self.assertTrue(result['correction_runbook_refresh'])
 
 
+    def test_summary_state_semantics_keeps_next_distinct_from_current(self):
+        context = '''CTX/2
+STATE
+- CURRENT service is running.
+DEC
+- Playstyle removal is agreed.
+OPEN
+- Path join remains unresolved.
+NEXT
+- Remove playstyle from calculate_tags_optimized.py and apply_tags_optimized.py.
+REJECTED
+-
+'''
+        guard = register._summary_state_semantics(context)
+        self.assertIn('CURRENT / IMPLEMENTED EVIDENCE', guard)
+        self.assertIn('CURRENT service is running.', guard)
+        self.assertIn('DECISIONS / CONSTRAINTS — NOT IMPLEMENTATION BY ITSELF', guard)
+        self.assertIn('UNRESOLVED — MUST REMAIN UNRESOLVED', guard)
+        self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', guard)
+        self.assertIn('Remove playstyle from calculate_tags_optimized.py', guard)
+
+    def test_summary_prompt_forbids_upgrading_planned_work_to_completed(self):
+        self._handoff('handoff-summary-state.md', 'state semantics',
+                      '''## What changed
+- CURRENT service is running.
+
+## Decisions and constraints
+- Playstyle removal is agreed.
+
+## Open issues
+- Path join remains unresolved.
+
+## Next steps
+- Remove playstyle from calculate_tags_optimized.py and apply_tags_optimized.py.''',
+                      4000)
+        seen = {}
+        safe = '''## Overview
+Demo project.
+
+## Where it stands
+The service is running. Playstyle removal has been agreed but is still pending. The path join remains unresolved.
+
+## Pick up here
+Remove playstyle from the two scripts, then resolve the path join.'''
+        old_complete = register._complete
+        def fake_complete(system, prompt, validator, expected, **kwargs):
+            seen['prompt'] = prompt
+            self.assertTrue(validator(safe))
+            return safe
+        register._complete = fake_complete
+        try:
+            result = register.generate_summary('Demo', full=True)
+        finally:
+            register._complete = old_complete
+        self.assertEqual(result['status'], 'generated')
+        prompt = seen['prompt']
+        self.assertIn('NEXT is future work', prompt)
+        self.assertIn('A decision to do something is not evidence that it has been implemented', prompt)
+        self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', prompt)
+        self.assertIn('Remove playstyle from calculate_tags_optimized.py', prompt)
+
 if __name__ == '__main__':
     unittest.main()

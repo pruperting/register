@@ -758,6 +758,33 @@ def _canonical_context_for_ai(name: str, *, refresh: bool = True) -> tuple[dict,
     return {"status": "ok"}, context
 
 
+def _summary_state_semantics(context: str) -> str:
+    """Extract CTX/2 state-bearing sections and label their semantics for AI views.
+
+    CTX/2 deliberately separates current state, decisions, unresolved issues and
+    future work. Human-oriented synthesis must not collapse those categories.
+    """
+    section_names = ("STATE", "DEC", "OPEN", "NEXT")
+    all_headers = ("GOAL", "STACK", "ARCH", "FILES", "STATE",
+                   "CORRECTIONS", "DEC", "INV", "BUG", "OPEN",
+                   "NEXT", "REJECTED", "FACTS")
+    header_re = "|".join(re.escape(x) for x in all_headers)
+    parts = []
+    labels = {
+        "STATE": "CURRENT / IMPLEMENTED EVIDENCE",
+        "DEC": "DECISIONS / CONSTRAINTS — NOT IMPLEMENTATION BY ITSELF",
+        "OPEN": "UNRESOLVED — MUST REMAIN UNRESOLVED",
+        "NEXT": "FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED",
+    }
+    for section in section_names:
+        match = re.search(
+            rf"(?ms)^{section}\s*$\n(.*?)(?=^(?:{header_re})\s*$|\Z)",
+            context or "")
+        body = match.group(1).strip() if match else "-"
+        parts.append(f"{labels[section]}:\n{body or '-'}")
+    return "\n\n".join(parts)
+
+
 def generate_summary(name: str, full: bool = False) -> dict:
     """Generate the human project summary from deterministic canonical CTX/2.
 
@@ -819,6 +846,15 @@ def generate_summary(name: str, full: bool = False) -> dict:
         if large_project:
             logger.warning("summary large-project project=%s source_docs=%d raw_tokens~%d ctx_tokens~%d but GEMINI_API_KEY missing; local fallback uses canonical CTX/2", name, source_docs, raw_source_tokens, canonical_prompt_tokens)
     user += (
+        "STATE SEMANTICS — AUTHORITATIVE INTERPRETATION OF CTX/2:\n"
+        + _summary_state_semantics(context) + "\n\n"
+        "STATE DISCIPLINE RULES:\n"
+        "- STATE is evidence of current/implemented reality.\n"
+        "- NEXT is future work. Never describe a NEXT item as done, removed, added, fixed, deployed, implemented, completed or otherwise current unless independent STATE text explicitly says it happened.\n"
+        "- OPEN is unresolved. Never turn an OPEN item into a settled fact.\n"
+        "- DEC records decisions/constraints. A decision to do something is not evidence that it has been implemented. If the same subject appears in DEC and NEXT, describe it as decided/planned but still pending.\n"
+        "- Words such as planned, proposed, agreed, recommended, intended and should remain future/decision language unless STATE separately records completion.\n"
+        "- When evidence is ambiguous, preserve the less-complete state rather than upgrading it.\n\n"
         "TASK: Write the current human-readable project status from the canonical context. "
         "Do not add facts from general knowledge. Explicit CORRECTIONS are authoritative: "
         "apply each CURRENT value and never present its PREVIOUS value as current.\n\n"
