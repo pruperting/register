@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}archive · project register{% endblock %}
+{% block content %}
+<div class="crumb"><a href="{{ url_for('index') }}">← active projects</a></div>
+
+<div class="phead">
+  <h1>archive</h1>
+  <span class="dim">{{ projects|length }} project{{ 's' if projects|length != 1 }}</span>
+</div>
+
+<p class="hint">
+  Archived projects live under <code>projects/archive/</code>. They are excluded
+  from the active project view and scheduled refreshes, but remain available
+  here for reference or unarchiving.
+</p>
+
+<div class="grid">
+  {% for p in projects %}
+  <div class="card dimmed">
+    <div class="row1">
+      <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
+      <a href="{{ url_for('detail', name=p.name) }}" class="pname">{{ p.name }}</a>
+    </div>
+    <div class="row2">
+      {% if p.status %}<span class="pill st-{{ p.status }}">{{ p.status }}</span>{% endif %}
+      <span class="dim">
+        {{ p.file_count }} file{{ 's' if p.file_count != 1 }}
+        {%- if p.handoff_count %} · {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }}{% endif %}
+      </span>
+    </div>
+  </div>
+  {% else %}
+  <div class="empty">No archived projects.</div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -8,6 +8,9 @@
   <span class="spacer"></span>
   <button class="ghost sm" id="new-btn">new project</button>
   <button class="ghost sm" id="merge-toggle">merge…</button>
+  {% if archived %}
+  <a class="ghost sm" href="{{ url_for('archive_page') }}">archive ({{ archived|length }})</a>
+  {% endif %}
 </div>
 
 {% if unfiled %}
@@ -68,9 +71,12 @@
 
 {% if needs_handoff %}
 <div class="notice">
-  {{ needs_handoff|length }} project{{ 's' if needs_handoff|length != 1 }} have no handoff notes yet, so
-  summaries fall back to truncated transcripts. Drop a context summary into
-  <code>projects/&lt;name&gt;/handoffs/</code> for much better results.
+  <strong>{{ needs_handoff|length }} active project{{ 's' if needs_handoff|length != 1 }} have no handoff history:</strong>
+  {% for p in needs_handoff %}
+    <a href="{{ url_for('detail', name=p.name) }}">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+  {% endfor %}.
+  Automatic context and summary refresh is paused for these projects until a
+  handoff exists. Their <code>handoffs/</code> folders are created automatically.
 </div>
 {% endif %}
 
@@ -119,19 +125,6 @@
   {% endfor %}
 </div>
 
-{% if archived %}
-<details class="arch">
-  <summary>archived ({{ archived|length }})</summary>
-  <div class="grid">
-    {% for p in archived %}
-    <div class="card dimmed">
-      <div class="row1"><a href="{{ url_for('detail', name=p.name) }}" class="pname">{{ p.name }}</a></div>
-      <div class="row2"><span class="dim">{{ p.file_count }} files</span></div>
-    </div>
-    {% endfor %}
-  </div>
-</details>
-{% endif %}
 {% endblock %}
 
 {% block scripts %}

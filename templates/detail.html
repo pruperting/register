@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ p.name }} · project register{% endblock %}
 {% block content %}
-<div class="crumb"><a href="{{ url_for('index') }}">← all projects</a></div>
+<div class="crumb"><a href="{{ url_for('archive_page') if p.archived else url_for('index') }}">← {{ 'archive' if p.archived else 'all projects' }}</a></div>
 
 <div class="phead">
   <h1>{{ p.name }}</h1>
@@ -49,12 +49,13 @@
     </button>
     <button class="ghost sm sum-full-btn" data-p="{{ p.name }}">rebuild</button>
     {% if p.has_summary %}
-    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_summary.md') }}">obsidian ↗</a>
+    <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/' + p.name + '_summary.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
   {% if not p.handoff_count and p.file_count %}
-  <p class="notice inline">No handoff notes — summaries will use truncated
-  transcripts. Add one to <code>projects/{{ p.name }}/handoffs/</code>.</p>
+  <p class="notice inline"><strong>No handoff history yet.</strong>
+  Automatic context and summary refresh is paused. The handoff folder is ready at
+  <code>{{ p.rel_dir }}/handoffs/</code>.</p>
   {% endif %}
   {% if p.summary %}<div class="md">{{ p.summary | markdown | safe }}</div>
   {% else %}<p class="dim">Generate a summary to see where this project stands.</p>{% endif %}
@@ -74,7 +75,7 @@
     {% if p.has_context %}
     <button class="ghost sm" data-prompt="/api/context/{{ p.name | urlencode }}">copy context</button>
     <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1">download</a>
-    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_CONTEXT.md') }}">obsidian ↗</a>
+    <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/' + p.name + '_CONTEXT.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
   <p class="hint">Compact, verified project checkpoint for starting a fresh AI coding chat. New material triggers a deterministic rebuild from all immutable handoffs; explicit corrections override conflicting earlier facts.</p>
@@ -93,11 +94,11 @@
       {% if p.has_runbook %}regenerate{% else %}generate{% endif %}
     </button>
     {% if p.has_runbook %}
-    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_RUNBOOK.md') }}">obsidian ↗</a>
+    <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/' + p.name + '_RUNBOOK.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
   <p class="hint">Deployment steps, config and gotchas — written to
-    <code>projects/{{ p.name }}/{{ p.name }}_RUNBOOK.md</code> for copying into the git repo.
+    <code>{{ p.rel_dir }}/{{ p.name }}_RUNBOOK.md</code> for copying into the git repo.
     Verify the commands before trusting them.</p>
   {% if p.has_runbook %}
   <details><summary>view runbook</summary><div class="md">{{ p.runbook | markdown | safe }}</div></details>
@@ -146,9 +147,15 @@ document.getElementById('repo-btn').addEventListener('click', async () => {
 document.getElementById('archive-btn').addEventListener('click', async (e) => {
   const was = e.target.dataset.a === '1';
   e.target.disabled = true;
-  await fetch(`/api/archive/${encodeURIComponent(P)}`, { method:'POST',
+  const r = await fetch(`/api/archive/${encodeURIComponent(P)}`, { method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({archived: !was}) });
-  location.href = '/';
+  const j = await r.json();
+  if (j.status !== 'ok') {
+    alert(j.reason || 'archive operation failed');
+    e.target.disabled = false;
+    return;
+  }
+  location.href = was ? '/' : '/archive';
 });
 document.getElementById('rename-btn').addEventListener('click', (e) => {
   const next = prompt(`Rename "${P}" to:`, P);

@@ -107,6 +107,12 @@ def index():
                            badly_named=[p for p in active if not p["name_ok"]])
 
 
+@app.route("/archive")
+def archive_page():
+    projects = [p for p in register.project_list() if p["archived"]]
+    return render_template("archive.html", projects=projects)
+
+
 @app.route("/p/<name>")
 def detail(name):
     p = register.project(name)

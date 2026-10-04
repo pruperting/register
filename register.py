@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 VAULT_PATH = Path(os.environ.get("VAULT_PATH", "/vault"))
 PROJECTS_DIR = "projects"
+ARCHIVE_DIR = "archive"
 CONVERSATIONS_DIR = "ai-conversations"
 
 
@@ -44,10 +45,66 @@ def context_name(project: str) -> str:
     return f"{project}_CONTEXT.md"
 
 
-def project_dir(name: str) -> Path:
-    """A project's folder. Exact name, no fuzzy matching — the folder IS
-    the project, so there is nothing to resolve."""
+def active_project_dir(name: str) -> Path:
     return VAULT_PATH / PROJECTS_DIR / name
+
+
+def archived_project_dir(name: str) -> Path:
+    return VAULT_PATH / PROJECTS_DIR / ARCHIVE_DIR / name
+
+
+def project_dir(name: str) -> Path:
+    """Resolve a project from active or archived storage."""
+    active = active_project_dir(name)
+    archived = archived_project_dir(name)
+    if active.exists():
+        return active
+    if archived.exists():
+        return archived
+    return active
+
+
+def project_rel_dir(name: str, archived: bool = False) -> str:
+    return (f"{PROJECTS_DIR}/{ARCHIVE_DIR}/{name}"
+            if archived else f"{PROJECTS_DIR}/{name}")
+
+
+def _ensure_handoffs_dir(path: Path) -> None:
+    """Every Register project has a handoffs directory."""
+    (path / "handoffs").mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_legacy_archives(projects_root: Path) -> None:
+    """Move metadata-archived projects into projects/archive/.
+
+    Existing destinations are never overwritten. A blocked migration stays
+    visible as active so Register never hides or merges ambiguous data.
+    """
+    archive_root = projects_root / ARCHIVE_DIR
+    archive_root.mkdir(parents=True, exist_ok=True)
+    for src in sorted(projects_root.iterdir()):
+        if (not src.is_dir() or src.name == ARCHIVE_DIR
+                or src.name.startswith(".")):
+            continue
+        meta_path = src / "_project.md"
+        if not meta_path.exists():
+            continue
+        parsed = _read(meta_path)
+        if not parsed:
+            continue
+        meta, _ = parsed
+        if not bool(meta.get("archived", False)):
+            continue
+        dest = archive_root / src.name
+        if dest.exists():
+            logger.error("legacy archive migration blocked for %s: destination exists",
+                         src.name)
+            continue
+        try:
+            src.rename(dest)
+            logger.info("migrated archived project %s -> %s", src.name, dest)
+        except OSError as e:
+            logger.error("cannot migrate archived project %s: %s", src.name, e)
 
 
 def title_case(name: str) -> str:
@@ -154,6 +211,8 @@ def _claimed_project(path: Path, meta: dict) -> tuple[str | None, str]:
     if fm:
         return fm, "frontmatter"
     if len(parts) >= 2 and parts[0] == PROJECTS_DIR:
+        if parts[1] == ARCHIVE_DIR and len(parts) >= 3:
+            return parts[2], "location"
         return parts[1], "location"
     if len(parts) >= 3 and parts[0] == CONVERSATIONS_DIR:
         return parts[2], "convo-folder"
@@ -188,10 +247,32 @@ def _scan() -> dict:
 
     pdir = VAULT_PATH / PROJECTS_DIR
     if pdir.exists():
+        _migrate_legacy_archives(pdir)
+        archive_root = pdir / ARCHIVE_DIR
+
+        def add_project(d: Path, archived: bool) -> None:
+            if not d.is_dir() or d.name.startswith("."):
+                return
+            if d.name in projects:
+                logger.error("duplicate active/archive project name: %s", d.name)
+                return
+            try:
+                _ensure_handoffs_dir(d)
+            except OSError as e:
+                logger.warning("cannot ensure handoffs directory for %s: %s", d, e)
+            projects[d.name] = {
+                "name": d.name, "files": [], "handoffs": [], "mtime": 0.0,
+                "archived": archived,
+                "rel_dir": project_rel_dir(d.name, archived),
+            }
+
         for d in sorted(pdir.iterdir()):
-            if d.is_dir() and not d.name.startswith("."):
-                projects[d.name] = {"name": d.name, "files": [],
-                                    "handoffs": [], "mtime": 0.0}
+            if d.name == ARCHIVE_DIR:
+                continue
+            add_project(d, False)
+        if archive_root.exists():
+            for d in sorted(archive_root.iterdir()):
+                add_project(d, True)
 
     for path in VAULT_PATH.rglob("*.md"):
         rel = path.relative_to(VAULT_PATH)
@@ -247,7 +328,13 @@ def _scan() -> dict:
         p["staleness"] = ("fresh" if days < 14 else "warm" if days < 45
                           else "cool" if days < 120 else "cold")
         p["name_ok"] = p["name"] == title_case(p["name"])
+        physical_archived = p["archived"]
+        rel_dir = p["rel_dir"]
         p.update(get_meta(p["name"]))
+        # Folder location is lifecycle truth. The legacy frontmatter field is
+        # retained for backwards compatibility only.
+        p["archived"] = physical_archived
+        p["rel_dir"] = rel_dir
         p.update(summary_info(p["name"]))
         p.update(context_info(p["name"]))
 
@@ -328,7 +415,39 @@ def set_status(name: str, status: str) -> dict:
 
 
 def set_archived(name: str, archived: bool) -> dict:
-    return _write_meta(name, archived=bool(archived))
+    """Archive/unarchive by moving the complete project folder."""
+    archived = bool(archived)
+    src = active_project_dir(name) if archived else archived_project_dir(name)
+    dest = archived_project_dir(name) if archived else active_project_dir(name)
+
+    if not src.exists():
+        already = archived_project_dir(name) if archived else active_project_dir(name)
+        if already.exists():
+            return {"status": "ok", "project": name, "archived": archived}
+        return {"status": "error", "reason": f"project '{name}' not found"}
+
+    if dest.exists():
+        return {
+            "status": "error",
+            "reason": (f"cannot {'archive' if archived else 'unarchive'} "
+                       f"'{name}': destination already exists"),
+        }
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dest)
+        _ensure_handoffs_dir(dest)
+    except OSError as e:
+        return {"status": "error", "reason": f"cannot move project folder: {e}"}
+
+    invalidate()
+    meta_result = _write_meta(name, archived=archived)
+    if meta_result.get("status") == "error":
+        logger.warning("project moved but archive metadata update failed: %s",
+                       meta_result.get("reason"))
+    invalidate()
+    return {"status": "ok", "project": name, "archived": archived,
+            "path": str(dest.relative_to(VAULT_PATH))}
 
 
 def set_repo(name: str, repo: str) -> dict:
@@ -1477,7 +1596,7 @@ def rename(old: str, new: str) -> dict:
 
     moved = _repoint(old, new)
     old_dir = project_dir(old)
-    new_dir = VAULT_PATH / PROJECTS_DIR / new
+    new_dir = old_dir.parent / new
     try:
         if old_dir.exists() and not new_dir.exists():
             old_dir.rename(new_dir)
@@ -1556,9 +1675,16 @@ def create_project(name: str) -> dict:
                  None)
     if clash:
         return {"status": "error", "reason": f"'{clash}' already exists"}
-    res = _write_meta(name, status="idea")
-    return res if res.get("status") == "error" else {"status": "ok",
-                                                     "project": name}
+    res = _write_meta(name, status="idea", archived=False)
+    if res.get("status") == "error":
+        return res
+    try:
+        _ensure_handoffs_dir(active_project_dir(name))
+    except OSError as e:
+        return {"status": "error",
+                "reason": f"project created but handoffs directory failed: {e}"}
+    invalidate()
+    return {"status": "ok", "project": name}
 
 
 def set_file_project(rel_path: str, target: str) -> bool:
