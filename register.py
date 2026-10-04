@@ -28,6 +28,8 @@ ARCHIVE_DIR = "archive"
 UNPROJECTED_DIR = "_unprojected"
 RESERVED_PROJECT_DIRS = {ARCHIVE_DIR, UNPROJECTED_DIR}
 CONVERSATIONS_DIR = "ai-conversations"
+TASKS_FILE = "tasks.md"
+TASK_STATUSES = ("todo", "doing", "blocked", "done")
 
 
 def summary_name(project: str) -> str:
@@ -74,6 +76,23 @@ def project_rel_dir(name: str, archived: bool = False) -> str:
 def _ensure_handoffs_dir(path: Path) -> None:
     """Every Register project has a handoffs directory."""
     (path / "handoffs").mkdir(parents=True, exist_ok=True)
+
+
+def _tasks_path(name: str) -> Path:
+    return project_dir(name) / TASKS_FILE
+
+
+def _empty_tasks_document(name: str) -> str:
+    sections = "\n\n".join(f"## {status.upper()}\n" for status in TASK_STATUSES)
+    return ("---\n" "type: project-tasks\n" f"project: {name}\n" "---\n\n"
+            "# Tasks\n\n" f"{sections}\n")
+
+
+def _ensure_tasks_file(path: Path, name: str) -> None:
+    """Create the authoritative task ledger if a project predates Stage 3."""
+    tasks = path / TASKS_FILE
+    if not tasks.exists():
+        tasks.write_text(_empty_tasks_document(name), encoding="utf-8")
 
 
 def _migrate_legacy_archives(projects_root: Path) -> None:
@@ -188,7 +207,7 @@ def _read(path: Path):
 def _is_generated_or_junk(filename: str) -> bool:
     """Files the register writes itself, plus vault detritus that should
     never be treated as project material."""
-    if filename in ("_project.md", "_summary.md", "RUNBOOK.md"):
+    if filename in ("_project.md", "_summary.md", "RUNBOOK.md", TASKS_FILE):
         return True
     if filename.endswith(("_summary.md", "_RUNBOOK.md", "_CONTEXT.md")):
         return True
@@ -263,8 +282,10 @@ def _scan() -> dict:
                 return
             try:
                 _ensure_handoffs_dir(d)
+                if not archived:
+                    _ensure_tasks_file(d, d.name)
             except OSError as e:
-                logger.warning("cannot ensure handoffs directory for %s: %s", d, e)
+                logger.warning("cannot ensure project structure for %s: %s", d, e)
             projects[d.name] = {
                 "name": d.name, "files": [], "handoffs": [], "mtime": 0.0,
                 "archived": archived,
@@ -345,6 +366,7 @@ def _scan() -> dict:
         p["rel_dir"] = rel_dir
         p.update(summary_info(p["name"]))
         p.update(context_info(p["name"]))
+        p.update(tasks_info(p["name"]))
 
     for g in unfiled.values():
         g["files"].sort(key=lambda f: -f["mtime"])
@@ -445,6 +467,8 @@ def set_archived(name: str, archived: bool) -> dict:
         dest.parent.mkdir(parents=True, exist_ok=True)
         src.rename(dest)
         _ensure_handoffs_dir(dest)
+        if not archived:
+            _ensure_tasks_file(dest, name)
     except OSError as e:
         return {"status": "error", "reason": f"cannot move project folder: {e}"}
 
@@ -461,6 +485,142 @@ def set_archived(name: str, archived: bool) -> dict:
 def set_repo(name: str, repo: str) -> dict:
     return _write_meta(name, repo=(repo or "").strip())
 
+
+# ── explicit task lifecycle (tasks.md) ─────────────────────────────
+_TASK_LINE = re.compile(r"^\s*-\s*\[([ xX])\]\s+\[([A-Za-z0-9_-]+)\]\s+(.+?)\s*$")
+
+
+def _parse_tasks_file(path: Path) -> list[dict]:
+    """Parse Register's simple tasks.md format with stable task IDs."""
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    tasks, status = [], None
+    for line in text.splitlines():
+        heading = re.match(r"^##\s+(TODO|DOING|BLOCKED|DONE)\s*$", line, re.I)
+        if heading:
+            status = heading.group(1).lower()
+            continue
+        if status not in TASK_STATUSES:
+            continue
+        match = _TASK_LINE.match(line)
+        if not match:
+            continue
+        checked, task_id, task_text = match.groups()
+        effective_status = "done" if checked.lower() == "x" else status
+        tasks.append({"id": task_id, "text": task_text.strip(), "status": effective_status})
+    return tasks
+
+
+def _write_tasks(name: str, tasks: list[dict]) -> dict:
+    path = _tasks_path(name)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    grouped = {status: [] for status in TASK_STATUSES}
+    for task in tasks:
+        status = task.get("status", "todo")
+        if status not in TASK_STATUSES:
+            status = "todo"
+        grouped[status].append(task)
+    lines = ["---", "type: project-tasks", f"project: {name}",
+             f"updated_at: {now}", "---", "", "# Tasks", ""]
+    for status in TASK_STATUSES:
+        lines.extend([f"## {status.upper()}", ""])
+        for task in grouped[status]:
+            checked = "x" if status == "done" else " "
+            lines.append(f"- [{checked}] [{task['id']}] {task['text']}")
+        lines.append("")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        return {"status": "error", "reason": f"cannot write tasks: {e}"}
+    invalidate()
+    return {"status": "ok", "project": name}
+
+
+def tasks_info(name: str) -> dict:
+    tasks = _parse_tasks_file(_tasks_path(name))
+    grouped = {status: [] for status in TASK_STATUSES}
+    for task in tasks:
+        grouped[task["status"]].append(task)
+    counts = {status: len(grouped[status]) for status in TASK_STATUSES}
+    return {"tasks": tasks, "tasks_by_status": grouped, "task_counts": counts,
+            "task_count": len(tasks),
+            "open_task_count": counts["todo"] + counts["doing"] + counts["blocked"],
+            "has_tasks_file": _tasks_path(name).exists()}
+
+
+def _next_task_id(tasks: list[dict]) -> str:
+    highest = 0
+    for task in tasks:
+        match = re.fullmatch(r"T(\d+)", task.get("id", ""), re.I)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return f"T{highest + 1:03d}"
+
+
+def add_task(name: str, text: str, status: str = "todo") -> dict:
+    if not project(name):
+        return {"status": "error", "reason": "project not found"}
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    status = (status or "todo").strip().lower()
+    if not text:
+        return {"status": "error", "reason": "task text is required"}
+    if len(text) > 500:
+        return {"status": "error", "reason": "task text is too long (max 500 characters)"}
+    if status not in TASK_STATUSES:
+        return {"status": "error", "reason": f"status must be one of {TASK_STATUSES}"}
+    tasks = _parse_tasks_file(_tasks_path(name))
+    task = {"id": _next_task_id(tasks), "text": text, "status": status}
+    tasks.append(task)
+    result = _write_tasks(name, tasks)
+    if result.get("status") == "ok":
+        result["task"] = task
+    return result
+
+
+def update_task(name: str, task_id: str, *, status: str | None = None,
+                text: str | None = None) -> dict:
+    if not project(name):
+        return {"status": "error", "reason": "project not found"}
+    tasks = _parse_tasks_file(_tasks_path(name))
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        return {"status": "error", "reason": f"task '{task_id}' not found"}
+    if status is not None:
+        status = status.strip().lower()
+        if status not in TASK_STATUSES:
+            return {"status": "error", "reason": f"status must be one of {TASK_STATUSES}"}
+        task["status"] = status
+    if text is not None:
+        text = re.sub(r"\s+", " ", text.strip())
+        if not text:
+            return {"status": "error", "reason": "task text is required"}
+        if len(text) > 500:
+            return {"status": "error", "reason": "task text is too long (max 500 characters)"}
+        task["text"] = text
+    result = _write_tasks(name, tasks)
+    if result.get("status") == "ok":
+        result["task"] = task
+    return result
+
+
+def delete_task(name: str, task_id: str) -> dict:
+    if not project(name):
+        return {"status": "error", "reason": "project not found"}
+    tasks = _parse_tasks_file(_tasks_path(name))
+    kept = [t for t in tasks if t["id"] != task_id]
+    if len(kept) == len(tasks):
+        return {"status": "error", "reason": f"task '{task_id}' not found"}
+    result = _write_tasks(name, kept)
+    if result.get("status") == "ok":
+        result["deleted"] = task_id
+    return result
 
 # ── summaries ───────────────────────────────────────────────────────
 
@@ -1773,6 +1933,13 @@ def rename(old: str, new: str) -> dict:
                     item.rename(new_dir / item.name)
     except OSError as e:
         logger.error("cannot move project folder: %s", e)
+    task_file = new_dir / TASKS_FILE
+    if task_file.exists():
+        current_tasks = _parse_tasks_file(task_file)
+        task_result = _write_tasks(new, current_tasks)
+        if task_result.get("status") == "error":
+            logger.warning("renamed project but task metadata update failed: %s",
+                           task_result.get("reason"))
     # The carried-over summary describes the old name; drop it.
     try:
         for f in (summary_name(old), summary_name(new), "_summary.md",
@@ -1794,7 +1961,12 @@ def merge(sources: list[str], target: str) -> dict:
         return {"status": "error", "reason": "no valid source projects"}
 
     total, notes = 0, []
+    target_tasks = _parse_tasks_file(_tasks_path(target))
     for src in sources:
+        source_tasks = _parse_tasks_file(_tasks_path(src))
+        for task in source_tasks:
+            target_tasks.append({"id": _next_task_id(target_tasks),
+                                 "text": task["text"], "status": task["status"]})
         total += _repoint(src, target)
         sdir = project_dir(src)
         meta_file = sdir / "_project.md"
@@ -1804,11 +1976,14 @@ def merge(sources: list[str], target: str) -> dict:
                 notes.append(f"### merged from {src}\n\n{parsed[1].strip()}")
         try:
             for f in (summary_name(src), runbook_name(src), context_name(src), "_summary.md",
-                      "RUNBOOK.md", "_project.md"):
+                      "RUNBOOK.md", "_project.md", TASKS_FILE):
                 (sdir / f).unlink(missing_ok=True)
         except OSError:
             pass
 
+    task_result = _write_tasks(target, target_tasks)
+    if task_result.get("status") == "error":
+        logger.warning("project merge task write failed: %s", task_result.get("reason"))
     if notes:
         tgt = project_dir(target) / "_project.md"
         try:
@@ -1846,10 +2021,12 @@ def create_project(name: str) -> dict:
     if res.get("status") == "error":
         return res
     try:
-        _ensure_handoffs_dir(active_project_dir(name))
+        project_path = active_project_dir(name)
+        _ensure_handoffs_dir(project_path)
+        _ensure_tasks_file(project_path, name)
     except OSError as e:
         return {"status": "error",
-                "reason": f"project created but handoffs directory failed: {e}"}
+                "reason": f"project created but project structure failed: {e}"}
     invalidate()
     return {"status": "ok", "project": name}
 

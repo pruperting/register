@@ -228,6 +228,27 @@ def api_repo(name):
     return jsonify(r), (200 if r["status"] == "ok" else 500)
 
 
+@app.route("/api/tasks/<name>", methods=["POST"])
+def api_task_add(name):
+    body = request.json or {}
+    r = register.add_task(name, body.get("text", ""), body.get("status", "todo"))
+    return jsonify(r), (200 if r["status"] == "ok" else 400)
+
+
+@app.route("/api/tasks/<name>/<task_id>", methods=["POST", "DELETE"])
+def api_task(name, task_id):
+    if request.method == "DELETE":
+        r = register.delete_task(name, task_id)
+    else:
+        body = request.json or {}
+        r = register.update_task(
+            name, task_id,
+            status=body.get("status") if "status" in body else None,
+            text=body.get("text") if "text" in body else None,
+        )
+    return jsonify(r), (200 if r["status"] == "ok" else 400)
+
+
 @app.route("/api/rename/<name>", methods=["POST"])
 def api_rename(name):
     new = (request.json or {}).get("new", "")
