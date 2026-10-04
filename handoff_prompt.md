@@ -33,6 +33,20 @@ features added, bugs fixed, files created or modified. Be concrete and
 specific. Name files and functions rather than describing changes in the
 abstract.
 
+**Corrections to previous records** Review the current conversation for any
+evidence that a fact in an earlier handoff, debrief, project status, AI context,
+or runbook was wrong, misleading, materially incomplete, or has since been
+disproved. If so, call the correction out explicitly here — do not merely state
+the new value and leave the old claim ambiguous. Each correction MUST be one
+bullet using exactly this shape:
+
+`- CORRECTION | PREVIOUS: <the earlier wrong claim/value> | CURRENT: <the corrected authoritative claim/value> | AFFECTS: <project/status/AI context/runbook as applicable> | EVIDENCE: <what in this conversation established the correction>`
+
+Use one record per corrected fact. `PREVIOUS` is historical/audit information;
+`CURRENT` is authoritative from this point onward. If this conversation surfaced
+no correction to an earlier record, write exactly `none`. Corrections are
+continuation-critical and must never be omitted for brevity.
+
 **Decisions and constraints** Key decisions with the reasoning behind
 them, and any constraints we worked within. Distinguish clearly between
 what was decided and implemented, what was suggested but not acted on,
@@ -97,6 +111,23 @@ Rules for the whole document:
 
 I will save your output into my Obsidian vault. It does not matter which
 folder it lands in — the `project:` field above is what files it.
+
+CONTEXT CHECKPOINT RULES — these make the handoff safe to merge into the
+project's compact AI checkpoint:
+
+- For implementation-relevant facts, make the state explicit where ambiguity
+  is possible: CURRENT, SUPERSEDED, OPEN, or REJECTED.
+- Preserve exact filenames and paths, function/class names, API endpoints,
+  environment variables, database/schema names, versions, ports, commands,
+  important numeric values, and exact error text where it matters.
+- When a new fact replaces an older one, explicitly say what is superseded;
+  do not merely omit the old value. If the earlier value appeared in a previous
+  handoff/debrief, also record it in `## Corrections to previous records` using
+  the strict `CORRECTION | PREVIOUS | CURRENT | AFFECTS | EVIDENCE` form above.
+- Explicit corrections outrank every conflicting earlier record. Never restate
+  a corrected PREVIOUS value as CURRENT elsewhere in this handoff.
+- Do not call a proposal CURRENT unless it was actually implemented or the
+  conversation explicitly established it as the chosen design.
 
 ---
 

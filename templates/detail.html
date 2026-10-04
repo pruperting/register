@@ -28,6 +28,9 @@
     {% if p.repo %}edit repo{% else %}link repo{% endif %}
   </button>
   {% if p.repo %}<a href="{{ p.repo }}" class="ghost sm" target="_blank">open repo ↗</a>{% endif %}
+  <button class="ghost sm"
+          data-prompt="/prompt/debrief?project={{ p.name | urlencode }}"
+          title="Full technical debrief prompt, scoped to this project — paste the result into a new AI chat">debrief prompt</button>
   <button class="ghost sm" id="rename-btn" data-p="{{ p.name }}">rename</button>
   <button class="ghost sm" id="archive-btn" data-p="{{ p.name }}"
           data-a="{{ '1' if p.archived else '0' }}">
@@ -46,7 +49,7 @@
     </button>
     <button class="ghost sm sum-full-btn" data-p="{{ p.name }}">rebuild</button>
     {% if p.has_summary %}
-    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/_summary.md') }}">obsidian ↗</a>
+    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_summary.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
   {% if not p.handoff_count and p.file_count %}
@@ -59,6 +62,29 @@
 
 <section class="panel">
   <div class="phead2">
+    <h2>AI context</h2>
+    {% if p.has_context %}
+      <span class="dim">{{ p.context_at }} · {{ p.context_by }} · ~{{ p.context_tokens }} tokens · {{ 'verified' if p.context_verified else 'unverified' }}</span>
+    {% else %}<span class="warn">not generated</span>{% endif %}
+    <span class="spacer"></span>
+    <button class="ghost sm ctx-btn" data-p="{{ p.name }}">
+      {% if p.has_context %}update{% else %}generate{% endif %}
+    </button>
+    <button class="ghost sm ctx-full-btn" data-p="{{ p.name }}">rebuild</button>
+    {% if p.has_context %}
+    <button class="ghost sm" data-prompt="/api/context/{{ p.name | urlencode }}">copy context</button>
+    <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1">download</a>
+    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_CONTEXT.md') }}">obsidian ↗</a>
+    {% endif %}
+  </div>
+  <p class="hint">Compact, verified project checkpoint for starting a fresh AI coding chat. New material triggers a deterministic rebuild from all immutable handoffs; explicit corrections override conflicting earlier facts.</p>
+  {% if p.has_context %}
+  <details><summary>view context</summary><pre class="context-pre">{{ p.context }}</pre></details>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="phead2">
     <h2>runbook</h2>
     {% if p.has_runbook %}<span class="dim">{{ p.runbook_at }}</span>
     {% else %}<span class="dim">not generated</span>{% endif %}
@@ -67,11 +93,11 @@
       {% if p.has_runbook %}regenerate{% else %}generate{% endif %}
     </button>
     {% if p.has_runbook %}
-    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/RUNBOOK.md') }}">obsidian ↗</a>
+    <a class="ghost sm" href="{{ obsidian_uri('projects/' + p.name + '/' + p.name + '_RUNBOOK.md') }}">obsidian ↗</a>
     {% endif %}
   </div>
   <p class="hint">Deployment steps, config and gotchas — written to
-    <code>projects/{{ p.name }}/RUNBOOK.md</code> for copying into the git repo.
+    <code>projects/{{ p.name }}/{{ p.name }}_RUNBOOK.md</code> for copying into the git repo.
     Verify the commands before trusting them.</p>
   {% if p.has_runbook %}
   <details><summary>view runbook</summary><div class="md">{{ p.runbook | markdown | safe }}</div></details>
@@ -134,6 +160,12 @@ document.querySelector('.sum-btn').addEventListener('click', (e) =>
 document.querySelector('.sum-full-btn').addEventListener('click', (e) => {
   if (!confirm('Rebuild the summary from all material, ignoring the existing one?')) return;
   runJob(e.target, `/api/summary/${encodeURIComponent(P)}`, `summary:${P}`, { full: true });
+});
+document.querySelector('.ctx-btn').addEventListener('click', (e) =>
+  runJob(e.target, `/api/context/${encodeURIComponent(P)}`, `context:${P}`, {}));
+document.querySelector('.ctx-full-btn').addEventListener('click', (e) => {
+  if (!confirm('Rebuild AI context from all project material? The existing verified checkpoint is kept if verification fails.')) return;
+  runJob(e.target, `/api/context/${encodeURIComponent(P)}`, `context:${P}`, { full: true });
 });
 document.querySelector('.rb-btn').addEventListener('click', (e) =>
   runJob(e.target, `/api/runbook/${encodeURIComponent(P)}`, `runbook:${P}`, {}));

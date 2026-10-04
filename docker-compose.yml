@@ -19,6 +19,10 @@ services:
       # Set VAULT_HOST_PATH in .env to your Obsidian vault.
       - ${VAULT_HOST_PATH:?set VAULT_HOST_PATH in .env}:/vault
     environment:
+      - LOCAL_AI_MAX_INPUT_TOKENS=${LOCAL_AI_MAX_INPUT_TOKENS:-8000}
+      - LOCAL_AI_MAX_SOURCE_DOCS=${LOCAL_AI_MAX_SOURCE_DOCS:-12}
+      - LARGE_PROJECT_BATCH_DOCS=${LARGE_PROJECT_BATCH_DOCS:-6}
+      - LARGE_PROJECT_BATCH_TOKENS=${LARGE_PROJECT_BATCH_TOKENS:-5000}
       - VAULT_PATH=/vault
       - SECRET_KEY=${SECRET_KEY:-change-me}
       - OBSIDIAN_VAULT_NAME=${OBSIDIAN_VAULT_NAME:-Obsidian}
@@ -28,9 +32,16 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
       - LOCAL_CHAT_MODEL=${LOCAL_CHAT_MODEL:-qwen3:30b-a3b}
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-24576}
+      # Optional AI refinement only; deterministic compression is the default.
+      - COMPRESS_MODEL=${COMPRESS_MODEL:-llama3.1:8b}
+      - COMPRESS_NUM_CTX=${COMPRESS_NUM_CTX:-8192}
+      - COMPRESS_TIMEOUT_S=${COMPRESS_TIMEOUT_S:-900}
+      - COMPRESS_CHUNK_CHARS=${COMPRESS_CHUNK_CHARS:-12000}
+      - COMPRESS_MAX_MB=${COMPRESS_MAX_MB:-20}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - AUTO_SUMMARY=${AUTO_SUMMARY:-true}
       - AUTO_SUMMARY_HOUR=${AUTO_SUMMARY_HOUR:-3}
       - AUTO_SUMMARY_MAX_PER_RUN=${AUTO_SUMMARY_MAX_PER_RUN:-5}
+      - CONTEXT_VERIFY_REPAIRS=${CONTEXT_VERIFY_REPAIRS:-1}
 # No named volumes: the app is stateless. Everything lives in the vault.

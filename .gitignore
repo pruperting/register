@@ -13,3 +13,8 @@ __pycache__/
 *.log
 vault/
 data/
+
+# Local backup / migration artefacts
+*.pre-*
+*.bak-*
+*.patch

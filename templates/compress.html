@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}compress · project register{% endblock %}
+{% block content %}
+<section class="compress-page">
+  <div class="page-head">
+    <div>
+      <h1>compress documents</h1>
+      <p class="muted">Turn Markdown or text files into compact AI-facing context. Deterministic mode uses no AI. Uploads are transient and are not saved to your vault.</p>
+    </div>
+  </div>
+
+  <div class="panel compress-panel">
+    <div id="drop-zone" class="drop-zone" tabindex="0">
+      <strong>Drop Markdown/text files here</strong>
+      <span>or click to choose files · .md .markdown .txt · {{ max_mb }} MB total</span>
+      <input id="file-input" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" multiple hidden>
+    </div>
+    <div id="file-list" class="compress-files muted">No files selected.</div>
+
+    <div class="compress-options">
+      <label>Profile
+        <select id="compress-mode">
+          <option value="safe">Safe</option>
+          <option value="balanced" selected>Balanced</option>
+          <option value="dense">Dense</option>
+        </select>
+      </label>
+      <label>Target
+        <select id="compress-target">
+          <option value="12000" selected>Auto · scaled to source</option>
+          <option value="2000">Cap at ~2,000</option>
+          <option value="3000">Cap at ~3,000</option>
+          <option value="4000">Cap at ~4,000</option>
+          <option value="5000">Cap at ~5,000</option>
+        </select>
+      </label>
+      <span class="muted">default: local Markdown-aware extraction · exact source text retained</span>
+      <span class="muted">optional AI refine: {{ backend }} · {{ model }}</span>
+    </div>
+
+    <div class="actions">
+      <button id="compress-btn">compress</button>
+      <span id="compress-status" class="muted"></span>
+    </div>
+  </div>
+
+  <div id="compress-result" class="panel compress-result" hidden>
+    <div class="compress-stats">
+      <div><strong id="stat-input">—</strong><span>input tokens</span></div>
+      <div><strong id="stat-output">—</strong><span>output tokens</span></div>
+      <div><strong id="stat-reduction">—</strong><span>reduction</span></div>
+      <div><strong id="stat-ratio">—</strong><span>compression</span></div>
+    </div>
+    <textarea id="compress-output" spellcheck="false" readonly></textarea>
+    <div class="actions">
+      <button id="copy-compressed">copy context</button>
+      <button id="download-compressed" class="ghost">download .ctx</button>
+      <span id="verified-label" class="muted"></span>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const input = document.getElementById('file-input');
+const drop = document.getElementById('drop-zone');
+const list = document.getElementById('file-list');
+const btn = document.getElementById('compress-btn');
+const status = document.getElementById('compress-status');
+const result = document.getElementById('compress-result');
+const output = document.getElementById('compress-output');
+let selected = [];
+
+function renderFiles() {
+  if (!selected.length) { list.textContent = 'No files selected.'; return; }
+  list.innerHTML = selected.map(f =>
+    `<span class="file-chip">${escapeHtml(f.name)} <small>${(f.size/1024).toFixed(1)} KB</small></span>`
+  ).join('');
+}
+function escapeHtml(s) {
+  const d=document.createElement('div'); d.textContent=s; return d.innerHTML;
+}
+function setFiles(files) {
+  selected = Array.from(files).filter(f => /\.(md|markdown|txt)$/i.test(f.name));
+  renderFiles();
+}
+drop.addEventListener('click', () => input.click());
+drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
+input.addEventListener('change', () => setFiles(input.files));
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.add('dragging');
+}));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.remove('dragging');
+}));
+drop.addEventListener('drop', e => setFiles(e.dataTransfer.files));
+
+btn.addEventListener('click', async () => {
+  if (!selected.length) { status.textContent = 'select at least one file'; return; }
+  btn.disabled = true; btn.textContent = 'compressing…'; status.textContent = '';
+  result.hidden = true;
+  const fd = new FormData();
+  selected.forEach(f => fd.append('files', f, f.name));
+  fd.append('mode', document.getElementById('compress-mode').value);    fd.append('target_tokens', document.getElementById('compress-target').value);  try {
+    const r = await fetch('/api/compress', {method:'POST', body:fd});
+    const start = await r.json();
+    if (!r.ok) throw new Error(start.reason || 'failed to start');
+    pollCompress(start.key);
+  } catch (e) {
+    status.textContent = e.message; btn.disabled=false; btn.textContent='compress';
+  }
+});
+let pollFailures = 0;
+async function pollCompress(key) {
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(key)}`, {cache:'no-store'});
+    if (!r.ok) throw new Error(`job poll returned ${r.status}`);
+    const j = await r.json();
+    pollFailures = 0;
+    if (j.state === 'running') {
+      status.textContent = j.progress || 'compressing…';
+      setTimeout(() => pollCompress(key), 2500); return;
+    }
+    const x = j.result || {};
+    if (j.state !== 'done' || x.status !== 'generated') throw new Error(x.reason || 'compression failed');
+    output.value = x.context;
+    document.getElementById('stat-input').textContent = Number(x.input_tokens).toLocaleString();
+    document.getElementById('stat-output').textContent = Number(x.output_tokens).toLocaleString();
+    document.getElementById('stat-reduction').textContent = `${x.reduction_pct}%`;
+    document.getElementById('stat-ratio').textContent = `${x.ratio}×`;
+    document.getElementById('verified-label').textContent =
+      `${x.engine} · ${x.model === 'none' ? 'no AI calls' : x.model}` +
+      ` · protected ${x.protected_retained || 0}/${x.protected_facts || 0}` +
+      ` · missing ${x.protected_missing || 0} · AI calls 0 · ${x.units_selected}/${x.units_total} units` +
+      (x.verified === true ? ' · deterministic check ✓' : '');
+    result.hidden = false; status.textContent = 'done';
+    btn.disabled=false; btn.textContent='compress';
+  } catch (e) {
+    // A laptop changing Wi-Fi, sleeping, or briefly losing LAN should not
+    // turn a server-side background job into a failed UI job.
+    pollFailures++;
+    status.textContent = `connection lost; retrying job… (${pollFailures})`;
+    setTimeout(() => pollCompress(key), Math.min(10000, 2000 + pollFailures * 1000));
+  }
+}
+document.getElementById('copy-compressed').addEventListener('click', async e => {
+  const orig=e.target.textContent;
+  try { await navigator.clipboard.writeText(output.value); e.target.textContent='copied ✓'; }
+  catch (_) { output.select(); document.execCommand('copy'); e.target.textContent='copied ✓'; }
+  setTimeout(()=>e.target.textContent=orig,2000);
+});
+document.getElementById('download-compressed').addEventListener('click', () => {
+  const blob=new Blob([output.value + '\n'], {type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='compressed-context.ctx'; a.click(); URL.revokeObjectURL(a.href);
+});
+</script>
+{% endblock %}

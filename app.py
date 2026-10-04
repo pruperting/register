@@ -1,17 +1,20 @@
 """Project register — Flask app."""
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
 from apscheduler.schedulers.background import BackgroundScheduler
 import markdown as _markdown
 
 import register
+import herald_status
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -20,6 +23,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key")
 VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", "Obsidian")
+COMPRESS_MAX_MB = int(os.environ.get("COMPRESS_MAX_MB", "20"))
 
 
 @app.template_filter("markdown")
@@ -50,6 +54,15 @@ def _run(key, fn):
                           elapsed_s=round(time.time() - _jobs[key]["_t0"], 1))
 
 
+
+
+def _job_progress(key, message):
+    logger.info("job %s: %s", key, message)
+    with _lock:
+        if key in _jobs:
+            _jobs[key]["progress"] = message
+            _jobs[key]["progress_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 def _start(key, fn):
     with _lock:
         cur = _jobs.get(key)
@@ -58,7 +71,8 @@ def _start(key, fn):
                             "started_at": cur["started_at"]}), 409
         _jobs[key] = {"state": "running", "key": key, "_t0": time.time(),
                       "started_at": datetime.now(timezone.utc)
-                      .isoformat(timespec="seconds"), "result": None}
+                      .isoformat(timespec="seconds"), "result": None,
+                      "progress": "queued"}
     threading.Thread(target=_run, args=(key, fn), daemon=True).start()
     return jsonify({"state": "running", "key": key}), 202
 
@@ -98,21 +112,91 @@ def detail(name):
     p = register.project(name)
     if not p:
         return redirect(url_for("index"))
-    p = {**p, **register.runbook_info(name)}
+    p = {**p, **register.runbook_info(name), **register.context_info(name)}
     return render_template("detail.html", p=p, statuses=register.STATUSES)
 
 
+
+@app.route("/compress")
+def compress_page():
+    return render_template(
+        "compress.html",
+        backend=register.SUMMARY_BACKEND,
+        model=(register.COMPRESS_MODEL if register.SUMMARY_BACKEND == "local"
+               else register.GEMINI_MODEL),
+        max_mb=COMPRESS_MAX_MB,
+    )
+
+
 # ── api ─────────────────────────────────────────────────────────────
+
+@app.route("/api/compress", methods=["POST"])
+def api_compress():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"status": "error", "reason": "select at least one file"}), 400
+    allowed = {".md", ".markdown", ".txt"}
+    docs, total = [], 0
+    limit = COMPRESS_MAX_MB * 1024 * 1024
+    for f in files:
+        suffix = Path(f.filename or "").suffix.lower()
+        if suffix not in allowed:
+            return jsonify({"status": "error",
+                            "reason": f"unsupported file type: {f.filename}"}), 400
+        raw = f.read()
+        total += len(raw)
+        if total > limit:
+            return jsonify({"status": "error",
+                            "reason": f"uploads exceed {COMPRESS_MAX_MB} MB limit"}), 413
+        docs.append((Path(f.filename or "document.md").name,
+                     raw.decode("utf-8", errors="replace")))
+    mode = request.form.get("mode", "balanced").lower()
+    try:
+        target_tokens = max(1000, min(12000, int(request.form.get("target_tokens", "12000"))))
+    except ValueError:
+        target_tokens = 12000
+    key = f"compress:{time.time_ns()}"
+    logger.info("compress request key=%s files=%d bytes=%d profile=%s target=%d engine=deterministic",
+                key, len(docs), total, mode, target_tokens)
+    return _start(
+        key,
+        lambda: register.compress_documents(
+            docs, mode=mode, target_tokens=target_tokens,
+            progress=lambda msg: _job_progress(key, msg)))
+
+
 @app.route("/api/summary/<name>", methods=["POST"])
 def api_summary(name):
     full = request.json.get("full", False) if request.is_json else False
-    return _start(f"summary:{name}",
-                  lambda: register.generate_summary(name, full=full))
+    # A correction is a cross-artifact transaction: status, CTX/2 and RUNBOOK
+    # must not disagree after one has been refreshed.
+    fn = (lambda: register.refresh_project(name, full=full)) if register.correction_propagation_needed(name) \
+         else (lambda: register.generate_summary(name, full=full))
+    return _start(f"summary:{name}", fn)
 
 
 @app.route("/api/runbook/<name>", methods=["POST"])
 def api_runbook(name):
     return _start(f"runbook:{name}", lambda: register.generate_runbook(name))
+
+
+@app.route("/api/context/<name>", methods=["GET", "POST"])
+def api_context(name):
+    if request.method == "POST":
+        full = request.json.get("full", False) if request.is_json else False
+        fn = (lambda: register.refresh_project(name, full=full)) if register.correction_propagation_needed(name) \
+             else (lambda: register.generate_context(name, full=full))
+        return _start(f"context:{name}", fn)
+    p = register.project(name)
+    if not p:
+        return jsonify({"status": "error", "reason": "project not found"}), 404
+    info = register.context_info(p["name"])
+    if not info["has_context"]:
+        return jsonify({"status": "error", "reason": "context not generated"}), 404
+    headers = {}
+    if request.args.get("download") == "1":
+        headers["Content-Disposition"] = f'attachment; filename="{register.context_name(p["name"])}"'
+    return Response(info["context"] + "\n", mimetype="text/plain", headers=headers)
 
 
 @app.route("/api/status/<name>", methods=["POST"])
@@ -181,23 +265,50 @@ def api_refresh():
 # (which spawned nine homelab-* projects) and drifting capitalisation
 # (which collided on the Windows Syncthing peer) — both came from the
 # model guessing. Give it the real list and it can't.
-_PROMPT_PATH = Path(__file__).parent / "handoff_prompt.md"
+_PROMPT_DIR = Path(__file__).parent
 
 
-def _prompt_text() -> str:
-    try:
-        template = _PROMPT_PATH.read_text(encoding="utf-8")
-    except OSError:
-        return "handoff_prompt.md is missing from the container."
+def _slug_list() -> str:
     active = [p["name"] for p in register.project_list() if not p["archived"]]
-    listing = "\n".join(f"  {n}" for n in active) or "  (no projects yet)"
-    return template.replace("<SLUG_LIST>", listing)
+    return "\n".join(f"  {n}" for n in active) or "  (no projects yet)"
+
+
+def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
+    """Two prompts, two jobs.
+
+    handoff  — what changed this session; appended to a running record and
+               folded into the project summary. Incremental.
+    debrief  — what the project IS today; a standalone context document to
+               paste at the start of a new chat. Supersedes rather than
+               accumulates, so it carries no history.
+    """
+    fname = "debrief_prompt.md" if kind == "debrief" else "handoff_prompt.md"
+    try:
+        template = (_PROMPT_DIR / fname).read_text(encoding="utf-8")
+    except OSError:
+        return f"{fname} is missing from the container."
+
+    if kind == "debrief":
+        p = register.project(project) if project else None
+        name = p["name"] if p else (project or "<project slug>")
+        repo = (p.get("repo") if p else "") or \
+            "(no repo recorded — set one on the project page)"
+        return template.replace("<PROJECT>", name).replace("<REPO>", repo)
+
+    return template.replace("<SLUG_LIST>", _slug_list())
 
 
 @app.route("/prompt")
-def prompt_page():
-    """Plain text so it can be curled, piped, or selected and copied."""
-    return _prompt_text(), 200, {"Content-Type": "text/plain; charset=utf-8"}
+@app.route("/prompt/<kind>")
+def prompt_page(kind: str = "handoff"):
+    """Plain text so it can be curled, piped, or selected and copied.
+    /prompt            session handoff, with current slugs
+    /prompt/debrief?project=Name   full project debrief, scoped to one
+    """
+    if kind not in ("handoff", "debrief"):
+        kind = "handoff"
+    text = _prompt_text(kind, request.args.get("project"))
+    return text, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.route("/api/stats")
@@ -207,6 +318,7 @@ def api_stats():
         "projects": len(ps),
         "active": len([p for p in ps if not p["archived"]]),
         "with_summary": len([p for p in ps if p["has_summary"]]),
+        "with_context": len([p for p in ps if p.get("has_context")]),
         "files": sum(p["file_count"] for p in ps),
         "handoffs": sum(p["handoff_count"] for p in ps),
         "summary_backend": register.SUMMARY_BACKEND,
@@ -241,24 +353,81 @@ def scheduled_refresh():
                         AUTO_MAX)
             break
         try:
-            res = register.generate_summary(p["name"])
-            logger.info("auto summary %s → %s", p["name"], res["status"])
+            res = register.refresh_project(p["name"])
+            logger.info("auto refresh %s → %s context=%s summary=%s runbook=%s",
+                        p["name"], res.get("status"),
+                        (res.get("context") or {}).get("status"),
+                        (res.get("summary") or {}).get("status"),
+                        (res.get("runbook") or {}).get("status"))
             if res.get("status") == "generated":
-                done += 1          # only generations count toward the cap
+                done += 1
         except Exception:
-            logger.exception("auto summary failed for %s", p["name"])
+            logger.exception("auto refresh failed for %s", p["name"])
     logger.info("auto summary run complete: %d generated, %d skipped "
                 "(no handoff notes — use the project page to summarise those)",
                 done, skipped_no_handoff)
 
 
-if os.environ.get("AUTO_SUMMARY", os.environ.get("WEEKLY_REFRESH", "true")).lower() == "true":
+def scheduled_synthesis():
+    """Run the monthly whole-estate Gemini review in a child process."""
+    script = Path(__file__).with_name("synthesise.py")
+    cmd = [sys.executable, str(script), "--vault", str(register.VAULT_PATH)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    except Exception:
+        logger.exception("monthly synthesis failed to start")
+        return
+    if proc.stdout.strip():
+        logger.info("monthly synthesis stdout: %s", proc.stdout.strip())
+    if proc.stderr.strip():
+        logger.info("monthly synthesis stderr: %s", proc.stderr.strip())
+    if proc.returncode:
+        logger.error("monthly synthesis exited %d", proc.returncode)
+    else:
+        logger.info("monthly synthesis complete")
+
+
+def scheduled_herald_export():
+    """Publish the once-daily Register delta after refresh/synthesis jobs."""
+    try:
+        herald_status.export_status()
+    except Exception:
+        logger.exception("Herald status export failed")
+
+
+def _enabled(name: str, default: str = "true") -> bool:
+    return os.environ.get(name, default).lower() == "true"
+
+
+_sched = BackgroundScheduler(timezone=os.environ.get("TZ", "Europe/London"))
+_sched_jobs = 0
+
+if _enabled("AUTO_SUMMARY", os.environ.get("WEEKLY_REFRESH", "true")):
     _hour = int(os.environ.get("AUTO_SUMMARY_HOUR", "3"))
-    sched = BackgroundScheduler(timezone=os.environ.get("TZ", "Europe/London"))
-    sched.add_job(scheduled_refresh, "cron", hour=_hour, id="auto_summary")
-    sched.start()
+    _sched.add_job(scheduled_refresh, "cron", hour=_hour, minute=0,
+                   id="auto_summary", coalesce=True, max_instances=1)
+    _sched_jobs += 1
     logger.info("auto summary scheduled (daily %02d:00, max %d per run)",
                 _hour, AUTO_MAX)
+
+if _enabled("MONTHLY_SYNTHESIS", "true"):
+    _syn_hour = int(os.environ.get("MONTHLY_SYNTHESIS_HOUR", "4"))
+    _sched.add_job(scheduled_synthesis, "cron", day=1, hour=_syn_hour, minute=0,
+                   id="monthly_synthesis", coalesce=True, max_instances=1)
+    _sched_jobs += 1
+    logger.info("monthly synthesis scheduled (day 1 at %02d:00)", _syn_hour)
+
+if _enabled("HERALD_STATUS_EXPORT", "true"):
+    _hs_hour = int(os.environ.get("HERALD_STATUS_HOUR", "6"))
+    _hs_minute = int(os.environ.get("HERALD_STATUS_MINUTE", "15"))
+    _sched.add_job(scheduled_herald_export, "cron", hour=_hs_hour, minute=_hs_minute,
+                   id="herald_status", coalesce=True, max_instances=1)
+    _sched_jobs += 1
+    logger.info("Herald status export scheduled (daily %02d:%02d)",
+                _hs_hour, _hs_minute)
+
+if _sched_jobs:
+    _sched.start()
 
 logger.info("register ready: vault=%s backend=%s",
             register.VAULT_PATH, register.SUMMARY_BACKEND)

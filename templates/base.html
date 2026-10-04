@@ -10,8 +10,9 @@
   <div class="wrap">
     <header class="top">
       <a href="{{ url_for('index') }}" class="brand">project register</a>
-      <button class="ghost sm" id="prompt-btn"
-              title="Copy the end-of-session handoff prompt, with your current project slugs">copy handoff prompt</button>
+      <a href="{{ url_for('compress_page') }}" class="ghost sm nav-link">compress</a>
+      <button class="ghost sm" data-prompt="/prompt"
+              title="End-of-session prompt: what changed, folded into the project summary">handoff prompt</button>
       <button class="ghost sm" id="refresh-btn">rescan vault</button>
     </header>
     {% block content %}{% endblock %}
@@ -52,18 +53,21 @@ function runJob(btn, url, key, body) {
     })
     .catch(() => done('failed', false));
 }
-document.getElementById('prompt-btn').addEventListener('click', async (e) => {
-  const btn = e.target, orig = btn.textContent;
+async function copyPrompt(btn, url) {
+  const orig = btn.textContent;
   try {
-    const text = await (await fetch('/prompt')).text();
+    const text = await (await fetch(url)).text();
     await navigator.clipboard.writeText(text);
     btn.textContent = 'copied ✓';
   } catch (err) {
     // Clipboard API needs HTTPS or localhost; fall back to opening it.
-    window.open('/prompt', '_blank');
+    window.open(url, '_blank');
     btn.textContent = 'opened';
   }
   setTimeout(() => { btn.textContent = orig; }, 2500);
+}
+document.querySelectorAll('[data-prompt]').forEach(btn => {
+  btn.addEventListener('click', () => copyPrompt(btn, btn.dataset.prompt));
 });
 
 document.getElementById('refresh-btn').addEventListener('click', async (e) => {
