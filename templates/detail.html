@@ -41,23 +41,6 @@
 
 <section class="panel">
   <div class="phead2">
-    <h2>current state</h2>
-    {% if p.state_populated %}<span class="dim">authoritative{% if p.state_updated_at %} · {{ p.state_updated_at }}{% endif %}</span>
-    {% else %}<span class="warn">empty scaffold</span>{% endif %}
-    <span class="spacer"></span>
-    <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/STATE.md') }}">obsidian ↗</a>
-  </div>
-  <p class="hint"><code>STATE.md</code> is authoritative present-tense truth: what exists now, architecture, environment, constraints and decisions currently in force. Tasks belong in <code>tasks.md</code>; history belongs in handoffs. CTX/2 does not consume STATE.md yet; that integration is the next stage.</p>
-  {% if p.state_populated %}<div class="md">{{ p.state | markdown | safe }}</div>
-  {% else %}<p class="dim">No current state recorded yet.</p>{% endif %}
-  <details class="state-editor"><summary>edit state in browser</summary>
-    <textarea id="state-text" style="width:100%;min-height:22rem;box-sizing:border-box;margin-top:.75rem">{{ p.state | e }}</textarea>
-    <p><button class="ghost sm state-save-btn">save authoritative state</button></p>
-  </details>
-</section>
-
-<section class="panel">
-  <div class="phead2">
     <h2>tasks</h2>
     <span class="dim">{{ p.task_counts.todo }} todo · {{ p.task_counts.doing }} doing · {{ p.task_counts.blocked }} blocked · {{ p.task_counts.done }} done</span>
     <span class="spacer"></span>
@@ -187,15 +170,6 @@
 {% block scripts %}
 <script>
 const P = "{{ p.name }}";
-document.querySelector('.state-save-btn').addEventListener('click', async (e) => {
-  const content = document.getElementById('state-text').value;
-  e.target.disabled = true;
-  const r = await fetch(`/api/state/${encodeURIComponent(P)}`, {method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({content})});
-  const j = await r.json();
-  if (j.status !== 'ok') { alert(j.reason || 'state update failed'); e.target.disabled = false; return; }
-  location.reload();
-});
 const taskRequest = async (url, method, body=null) => {
   const opts = {method, headers:{'Content-Type':'application/json'}};
   if (body !== null) opts.body = JSON.stringify(body);

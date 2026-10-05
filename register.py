@@ -29,7 +29,6 @@ UNPROJECTED_DIR = "_unprojected"
 RESERVED_PROJECT_DIRS = {ARCHIVE_DIR, UNPROJECTED_DIR}
 CONVERSATIONS_DIR = "ai-conversations"
 TASKS_FILE = "tasks.md"
-STATE_FILE = "STATE.md"
 TASK_STATUSES = ("todo", "doing", "blocked", "done")
 
 
@@ -94,42 +93,6 @@ def _ensure_tasks_file(path: Path, name: str) -> None:
     tasks = path / TASKS_FILE
     if not tasks.exists():
         tasks.write_text(_empty_tasks_document(name), encoding="utf-8")
-
-
-def _state_path(name: str) -> Path:
-    return project_dir(name) / STATE_FILE
-
-
-def _empty_state_document(name: str) -> str:
-    return ("---\n" "type: project-state\n" f"project: {name}\n" "---\n\n"
-            "# Project State\n\n"
-            "## Current\n\n"
-            "## Architecture\n\n"
-            "## Environment\n\n"
-            "## Constraints\n\n"
-            "## Decisions in force\n")
-
-
-def _ensure_state_file(path: Path, name: str) -> None:
-    """Create the authoritative present-tense state document for active projects."""
-    state = path / STATE_FILE
-    if not state.exists():
-        state.write_text(_empty_state_document(name), encoding="utf-8")
-
-
-def _state_meaningful(content: str) -> bool:
-    """Whether STATE.md contains truth beyond Register's empty scaffold."""
-    for raw in (content or "").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("<!--") or line.endswith("-->"):
-            continue
-        if line == "# Project State" or line in {
-            "## Current", "## Architecture", "## Environment",
-            "## Constraints", "## Decisions in force",
-        }:
-            continue
-        return True
-    return False
 
 
 def _migrate_legacy_archives(projects_root: Path) -> None:
@@ -244,7 +207,7 @@ def _read(path: Path):
 def _is_generated_or_junk(filename: str) -> bool:
     """Files the register writes itself, plus vault detritus that should
     never be treated as project material."""
-    if filename in ("_project.md", "_summary.md", "RUNBOOK.md", TASKS_FILE, STATE_FILE):
+    if filename in ("_project.md", "_summary.md", "RUNBOOK.md", TASKS_FILE):
         return True
     if filename.endswith(("_summary.md", "_RUNBOOK.md", "_CONTEXT.md")):
         return True
@@ -321,7 +284,6 @@ def _scan() -> dict:
                 _ensure_handoffs_dir(d)
                 if not archived:
                     _ensure_tasks_file(d, d.name)
-                    _ensure_state_file(d, d.name)
             except OSError as e:
                 logger.warning("cannot ensure project structure for %s: %s", d, e)
             projects[d.name] = {
@@ -405,7 +367,6 @@ def _scan() -> dict:
         p.update(summary_info(p["name"]))
         p.update(context_info(p["name"]))
         p.update(tasks_info(p["name"]))
-        p.update(state_info(p["name"]))
 
     for g in unfiled.values():
         g["files"].sort(key=lambda f: -f["mtime"])
@@ -508,7 +469,6 @@ def set_archived(name: str, archived: bool) -> dict:
         _ensure_handoffs_dir(dest)
         if not archived:
             _ensure_tasks_file(dest, name)
-            _ensure_state_file(dest, name)
     except OSError as e:
         return {"status": "error", "reason": f"cannot move project folder: {e}"}
 
@@ -524,54 +484,6 @@ def set_archived(name: str, archived: bool) -> dict:
 
 def set_repo(name: str, repo: str) -> dict:
     return _write_meta(name, repo=(repo or "").strip())
-
-
-# ── authoritative present state (STATE.md) ────────────────────────
-def state_info(name: str) -> dict:
-    path = _state_path(name)
-    out = {"state": "", "state_updated_at": "", "has_state_file": path.exists(),
-           "state_populated": False}
-    if not path.exists():
-        return out
-    parsed = _read(path)
-    if not parsed:
-        return out
-    meta, content = parsed
-    content = content.strip()
-    out.update({
-        "state": content,
-        "state_updated_at": str(meta.get("updated_at", "") or "").strip(),
-        "state_populated": _state_meaningful(content),
-    })
-    return out
-
-
-def _write_state(name: str, content: str) -> dict:
-    path = _state_path(name)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    post = frontmatter.Post((content or "").strip())
-    post.metadata.update({"type": "project-state", "project": name,
-                          "updated_at": now})
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    except OSError as e:
-        return {"status": "error", "reason": f"cannot write state: {e}"}
-    invalidate()
-    return {"status": "ok", "project": name, "updated_at": now}
-
-
-def set_state(name: str, content: str) -> dict:
-    if not project(name):
-        return {"status": "error", "reason": "project not found"}
-    content = (content or "").strip()
-    if len(content) > 50000:
-        return {"status": "error", "reason": "STATE.md is too large (max 50000 characters)"}
-    if not content:
-        content = frontmatter.loads(_empty_state_document(name)).content.strip()
-    return _write_state(name, content)
 
 
 # ── explicit task lifecycle (tasks.md) ─────────────────────────────
@@ -2028,14 +1940,6 @@ def rename(old: str, new: str) -> dict:
         if task_result.get("status") == "error":
             logger.warning("renamed project but task metadata update failed: %s",
                            task_result.get("reason"))
-    state_file = new_dir / STATE_FILE
-    if state_file.exists():
-        parsed_state = _read(state_file)
-        if parsed_state:
-            state_result = _write_state(new, parsed_state[1])
-            if state_result.get("status") == "error":
-                logger.warning("renamed project but state metadata update failed: %s",
-                               state_result.get("reason"))
     # The carried-over summary describes the old name; drop it.
     try:
         for f in (summary_name(old), summary_name(new), "_summary.md",
@@ -2056,18 +1960,6 @@ def merge(sources: list[str], target: str) -> dict:
     if not sources:
         return {"status": "error", "reason": "no valid source projects"}
 
-    # STATE.md is authoritative current truth, so never concatenate multiple
-    # populated state documents. Reconcile them explicitly before merging.
-    state_candidates = []
-    for state_name in [target] + sources:
-        info = state_info(state_name)
-        if info["state_populated"]:
-            state_candidates.append((state_name, info["state"]))
-    if len(state_candidates) > 1:
-        return {"status": "error",
-                "reason": "multiple projects have populated STATE.md files; reconcile state explicitly before merge"}
-    carried_state = state_candidates[0][1] if state_candidates else ""
-
     total, notes = 0, []
     target_tasks = _parse_tasks_file(_tasks_path(target))
     for src in sources:
@@ -2084,7 +1976,7 @@ def merge(sources: list[str], target: str) -> dict:
                 notes.append(f"### merged from {src}\n\n{parsed[1].strip()}")
         try:
             for f in (summary_name(src), runbook_name(src), context_name(src), "_summary.md",
-                      "RUNBOOK.md", "_project.md", TASKS_FILE, STATE_FILE):
+                      "RUNBOOK.md", "_project.md", TASKS_FILE):
                 (sdir / f).unlink(missing_ok=True)
         except OSError:
             pass
@@ -2092,10 +1984,6 @@ def merge(sources: list[str], target: str) -> dict:
     task_result = _write_tasks(target, target_tasks)
     if task_result.get("status") == "error":
         logger.warning("project merge task write failed: %s", task_result.get("reason"))
-    if carried_state:
-        state_result = _write_state(target, carried_state)
-        if state_result.get("status") == "error":
-            logger.warning("project merge state write failed: %s", state_result.get("reason"))
     if notes:
         tgt = project_dir(target) / "_project.md"
         try:
@@ -2136,7 +2024,6 @@ def create_project(name: str) -> dict:
         project_path = active_project_dir(name)
         _ensure_handoffs_dir(project_path)
         _ensure_tasks_file(project_path, name)
-        _ensure_state_file(project_path, name)
     except OSError as e:
         return {"status": "error",
                 "reason": f"project created but project structure failed: {e}"}

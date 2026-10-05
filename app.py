@@ -228,12 +228,6 @@ def api_repo(name):
     return jsonify(r), (200 if r["status"] == "ok" else 500)
 
 
-@app.route("/api/state/<name>", methods=["POST"])
-def api_state(name):
-    r = register.set_state(name, (request.json or {}).get("content", ""))
-    return jsonify(r), (200 if r["status"] == "ok" else 400)
-
-
 @app.route("/api/tasks/<name>", methods=["POST"])
 def api_task_add(name):
     body = request.json or {}
