@@ -62,7 +62,7 @@ class ContextTests(unittest.TestCase):
 
         result = register.generate_context('Demo')
         self.assertEqual(result['status'], 'error')
-        self.assertIn('no canonical material', result['reason'])
+        self.assertIn('no handoff material', result['reason'])
         self.assertFalse(register.context_info('Demo')['has_context'])
 
     def test_explicit_bootstrap_creates_compact_canonical_handoff_then_context(self):
@@ -119,9 +119,9 @@ none
 
         ctx = register.generate_context('Demo')
         self.assertEqual(ctx['status'], 'generated')
-        self.assertEqual(ctx['source_mode'], 'authoritative-state-tasks-handoffs')
+        self.assertEqual(ctx['source_mode'], 'handoffs')
         info = register.context_info('Demo')
-        self.assertEqual(info['context_source_mode'], 'authoritative-state-tasks-handoffs')
+        self.assertEqual(info['context_source_mode'], 'handoffs')
 
     def test_bootstrap_rejects_transcript_shaped_ai_output(self):
         convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
@@ -297,62 +297,6 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn('A decision to do something is not evidence that it has been implemented', prompt)
         self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', prompt)
         self.assertIn('Remove playstyle from calculate_tags_optimized.py', prompt)
-
-    def test_state_overrides_historical_context_section(self):
-        self._handoff('old.md', 'old', '## What changed\n- CURRENT service uses port 5000.', 1000)
-        register.all_projects()
-        state_text = '# Project State\n\n## Current\nService uses port 5050.\n\n## Architecture\n\n## Environment\n\n## Constraints\n\n## Decisions in force\n'
-        register.set_state('Demo', state_text)
-        result = register.generate_context('Demo', full=True)
-        self.assertEqual(result['status'], 'generated')
-        ctx = register.context_info('Demo')['context']
-        state = ctx.split('\nSTATE\n', 1)[1].split('\nCORRECTIONS\n', 1)[0]
-        self.assertIn('Service uses port 5050.', state)
-        self.assertNotIn('port 5000', state)
-        self.assertTrue(result['source_state'])
-
-    def test_tasks_override_stale_handoff_next_state(self):
-        self._handoff('old.md', 'old', '## Next steps\n- Remove playstyle support.', 1000)
-        register.all_projects()
-        task = register.add_task('Demo', 'Remove playstyle support')['task']
-        register.update_task('Demo', task['id'], status='done')
-        result = register.generate_context('Demo', full=True)
-        self.assertEqual(result['status'], 'generated')
-        ctx = register.context_info('Demo')['context']
-        next_body = ctx.split('\nNEXT\n', 1)[1].split('\nREJECTED\n', 1)[0]
-        state = ctx.split('\nSTATE\n', 1)[1].split('\nCORRECTIONS\n', 1)[0]
-        self.assertNotIn('Remove playstyle support', next_body)
-        self.assertIn('DONE: Remove playstyle support', state)
-        self.assertEqual(result['source_tasks'], 1)
-
-    def test_task_change_invalidates_fresh_context_without_new_handoff(self):
-        self._handoff('one.md', 'one', '## What changed\n- CURRENT app works.', 1000)
-        register.all_projects()
-        self.assertEqual(register.generate_context('Demo', full=True)['status'], 'generated')
-        self.assertEqual(register.generate_context('Demo')['status'], 'fresh')
-        register.add_task('Demo', 'Ship release')
-        second = register.generate_context('Demo')
-        self.assertEqual(second['status'], 'generated')
-        self.assertIn('TODO: Ship release', register.context_info('Demo')['context'])
-
-    def test_state_change_invalidates_fresh_context_without_new_handoff(self):
-        self._handoff('one.md', 'one', '## What changed\n- CURRENT app works.', 1000)
-        register.all_projects()
-        self.assertEqual(register.generate_context('Demo', full=True)['status'], 'generated')
-        self.assertEqual(register.generate_context('Demo')['status'], 'fresh')
-        register.set_state('Demo', '# Project State\n\n## Current\nNew current truth.\n\n## Architecture\n\n## Environment\n\n## Constraints\n\n## Decisions in force')
-        rebuilt = register.generate_context('Demo')
-        self.assertEqual(rebuilt['status'], 'generated')
-        self.assertIn('New current truth.', register.context_info('Demo')['context'])
-
-    def test_state_or_tasks_can_generate_context_without_handoffs(self):
-        register.all_projects()
-        register.set_state('Demo', '# Project State\n\n## Current\nState-only project is live.\n\n## Architecture\n\n## Environment\n\n## Constraints\n\n## Decisions in force')
-        result = register.generate_context('Demo')
-        self.assertEqual(result['status'], 'generated')
-        self.assertEqual(result['source_handoffs'], 0)
-        self.assertTrue(result['source_state'])
-        self.assertIn('State-only project is live.', register.context_info('Demo')['context'])
 
 if __name__ == '__main__':
     unittest.main()

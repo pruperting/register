@@ -723,12 +723,12 @@ def summary_info(name: str) -> dict:
     if not path.exists():
         return {"has_summary": False, "summary": "", "summary_at": "",
                 "summarised_through": 0.0, "summary_by": "",
-                "summary_source_mode": "", "summary_mtime": 0.0}
+                "summary_source_mode": ""}
     parsed = _read(path)
     if parsed is None:
         return {"has_summary": False, "summary": "", "summary_at": "",
                 "summarised_through": 0.0, "summary_by": "",
-                "summary_source_mode": "", "summary_mtime": 0.0}
+                "summary_source_mode": ""}
     meta, content = parsed
     return {
         "has_summary": True,
@@ -737,7 +737,6 @@ def summary_info(name: str) -> dict:
         "summary_by": str(meta.get("generated_by", "")),
         "summary_source_mode": str(meta.get("source_mode", "legacy-unknown")),
         "summarised_through": float(meta.get("summarised_through", 0) or 0),
-        "summary_mtime": path.stat().st_mtime if path.exists() else 0.0,
     }
 
 
@@ -747,19 +746,13 @@ def context_info(name: str) -> dict:
         return {"has_context": False, "context": "", "context_at": "",
                 "context_through": 0.0, "context_by": "",
                 "context_tokens": 0, "context_verified": False,
-                "context_source_mode": "", "context_state_mtime": 0.0,
-                "context_tasks_mtime": 0.0, "context_source_handoffs": 0,
-                "context_source_tasks": 0, "context_source_state": False,
-                "context_mtime": 0.0}
+                "context_source_mode": ""}
     parsed = _read(path)
     if parsed is None:
         return {"has_context": False, "context": "", "context_at": "",
                 "context_through": 0.0, "context_by": "",
                 "context_tokens": 0, "context_verified": False,
-                "context_source_mode": "", "context_state_mtime": 0.0,
-                "context_tasks_mtime": 0.0, "context_source_handoffs": 0,
-                "context_source_tasks": 0, "context_source_state": False,
-                "context_mtime": 0.0}
+                "context_source_mode": ""}
     meta, content = parsed
     return {
         "has_context": True,
@@ -770,12 +763,6 @@ def context_info(name: str) -> dict:
         "context_tokens": int(meta.get("estimated_tokens", 0) or 0),
         "context_verified": bool(meta.get("verified", False)),
         "context_source_mode": str(meta.get("source_mode", "legacy-unknown")),
-        "context_state_mtime": float(meta.get("state_mtime", 0) or 0),
-        "context_tasks_mtime": float(meta.get("tasks_mtime", 0) or 0),
-        "context_source_handoffs": int(meta.get("source_handoffs", 0) or 0),
-        "context_source_tasks": int(meta.get("source_tasks", 0) or 0),
-        "context_source_state": bool(meta.get("source_state", False)),
-        "context_mtime": path.stat().st_mtime if path.exists() else 0.0,
     }
 
 
@@ -1078,8 +1065,7 @@ def generate_summary(name: str, full: bool = False) -> dict:
 
     # If the human summary already covers this canonical checkpoint, no AI work.
     if (not full and p.get("summary") and
-            float(p.get("summary_mtime", 0.0) or 0.0) >=
-            float(p.get("context_mtime", 0.0) or 0.0)):
+            float(p.get("summarised_through", 0.0) or 0.0) >= hwm - 0.5):
         return {"status": "fresh", "input": "canonical-context", "ai_calls": 0}
 
     meta_bits = ""
@@ -1144,7 +1130,7 @@ def generate_summary(name: str, full: bool = False) -> dict:
         logger.error("summary failed for %s: %s", name, e)
         return {"status": "error", "reason": str(e)}
     logger.info("summary generation-done project=%s strategy=%s backend=%s output_tokens~%d", name, strategy, backend, _estimate_tokens(text))
-    err = _write_doc(name, summary_name(name), text, hwm, backend=backend, source_mode="authoritative-via-ctx2")
+    err = _write_doc(name, summary_name(name), text, hwm, backend=backend, source_mode="handoffs-via-ctx2")
     if err:
         return {"status": "error", "reason": err}
     invalidate()
@@ -1246,163 +1232,58 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _canonical_state_sections(content: str) -> dict[str, str]:
-    """Parse STATE.md's five authoritative sections without interpreting prose."""
-    wanted = {
-        "Current": "STATE", "Architecture": "ARCH", "Environment": "STACK",
-        "Constraints": "INV", "Decisions in force": "DEC",
-    }
-    out = {target: "" for target in wanted.values()}
-    current = None
-    buf = []
-    def flush():
-        nonlocal buf
-        if current:
-            out[wanted[current]] = "\n".join(buf).strip()
-        buf = []
-    for raw in (content or "").splitlines():
-        m = re.match(r"^##\s+(.+?)\s*$", raw.strip())
-        if m and m.group(1) in wanted:
-            flush(); current = m.group(1); continue
-        if current:
-            buf.append(raw)
-    flush()
-    return out
-
-
-def _ctx_sections(text: str) -> tuple[list[str], dict[str, list[str]]]:
-    """Split deterministic CTX/2 while preserving its preamble."""
-    lines = (text or "").splitlines()
-    names = set(_COMPRESS_SECTIONS)
-    preamble, sections, current = [], {s: [] for s in _COMPRESS_SECTIONS}, None
-    for line in lines:
-        if line in names:
-            current = line
-            continue
-        if current is None:
-            preamble.append(line)
-        else:
-            sections[current].append(line)
-    return preamble, sections
-
-
-def _task_text_norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
-
-
-def _overlay_authoritative_context(candidate: str, state_content: str,
-                                   tasks: list[dict]) -> str:
-    """Overlay human-authoritative STATE.md and tasks.md onto handoff-derived CTX/2.
-
-    STATE.md replaces only the corresponding CTX sections that are populated.
-    tasks.md owns task lifecycle: matching historical task lines are removed from
-    STATE/OPEN/NEXT and replaced with stable-ID records in their current status.
-    """
-    preamble, sections = _ctx_sections(candidate)
-    state_sections = _canonical_state_sections(state_content)
-    for sec, body in state_sections.items():
-        if body.strip():
-            sections[sec] = [f"@ Authoritative STATE.md — {sec}", *body.splitlines()]
-
-    task_norms = [_task_text_norm(t.get("text", "")) for t in tasks]
-    task_norms = [n for n in task_norms if len(n) >= 4]
-    for sec in ("STATE", "OPEN", "NEXT"):
-        kept = []
-        for line in sections[sec]:
-            norm = _task_text_norm(line)
-            if any(n in norm or norm in n for n in task_norms if norm):
-                continue
-            kept.append(line)
-        sections[sec] = kept
-
-    mapped = {"done": "STATE", "blocked": "OPEN", "doing": "NEXT", "todo": "NEXT"}
-    labels = {"done": "DONE", "blocked": "BLOCKED", "doing": "DOING", "todo": "TODO"}
-    for task in tasks:
-        status = task.get("status", "todo")
-        sec = mapped.get(status, "NEXT")
-        sections[sec].append(
-            f"- TASK [{task.get('id','?')}] {labels.get(status, status.upper())}: {task.get('text','').strip()}")
-
-    out = list(preamble)
-    if tasks or any(v.strip() for v in state_sections.values()):
-        out.append("AUTHORITATIVE_PRECEDENCE STATE.md current truth; tasks.md task lifecycle; explicit handoff CORRECTIONS; ordinary handoff history")
-    for sec in _COMPRESS_SECTIONS:
-        out.append(sec)
-        body = [line for line in sections[sec] if line.strip() and line.strip() != "-"]
-        out.extend(body or ["-"])
-    return "\n".join(out).strip()
-
-
-def _canonical_source_snapshot(name: str, p: dict) -> dict:
-    """Return canonical inputs plus mtimes used for freshness decisions."""
-    state_path = _state_path(name)
-    tasks_path = _tasks_path(name)
-    state_content = (p.get("state") or "").strip()
-    tasks = [t.copy() for t in p.get("tasks", [])]
-    state_mtime = state_path.stat().st_mtime if state_path.exists() else 0.0
-    tasks_mtime = tasks_path.stat().st_mtime if tasks_path.exists() else 0.0
-    all_docs, handoff_hwm = _all_material(p)
-    return {"state": state_content, "tasks": tasks,
-            "state_mtime": state_mtime, "tasks_mtime": tasks_mtime,
-            "handoffs": all_docs, "handoff_hwm": handoff_hwm}
-
-
 def generate_context(name: str, full: bool = False) -> dict:
-    """Rebuild CTX/2 from authoritative state/tasks plus immutable handoff evidence.
+    """Rebuild the canonical AI checkpoint deterministically from immutable handoffs.
 
-    Precedence is structural: populated STATE.md sections replace their historical
-    CTX counterparts; tasks.md owns task lifecycle; handoff CORRECTIONS remain the
-    highest-precedence historical evidence; ordinary handoffs supply background.
-    Reference files and AI conversations are never implicit input.
+    The watermark is only a freshness detector. When new material exists, the
+    checkpoint is rebuilt from all handoffs so repeated lossy recompression
+    cannot accumulate. No LLM generation, verification, or repair is involved.
     """
     p = project(name)
     if not p:
         return {"status": "error", "reason": "project not found"}
     name = p["name"]
-    snap = _canonical_source_snapshot(name, p)
-    source_mode = "authoritative-state-tasks-handoffs"
-    prev = p.get("context", "")
-    fresh = (not full and prev and p.get("context_source_mode") == source_mode
-             and float(p.get("context_through", 0) or 0) >= snap["handoff_hwm"] - 0.5
-             and float(p.get("context_state_mtime", 0) or 0) >= snap["state_mtime"]
-             and float(p.get("context_tasks_mtime", 0) or 0) >= snap["tasks_mtime"])
-    if fresh:
-        return {"status": "fresh", "estimated_tokens": _estimate_tokens(prev),
-                "engine": "deterministic", "ai_calls": 0, "source_mode": source_mode}
 
-    state_meaningful = _state_meaningful(snap["state"])
-    tasks = snap["tasks"]
-    all_docs = snap["handoffs"]
-    if not all_docs and not state_meaningful and not tasks:
-        return {"status": "error",
-                "reason": "no canonical material; add STATE.md/tasks.md or bootstrap reference material explicitly first",
-                "source_mode": "canonical-input-required"}
+    # First use the watermark only to decide whether work is necessary.
+    since = 0.0 if full else p.get("context_through", 0.0)
+    pending, pending_hwm = _material(p, since)
+    if not pending and not full:
+        prev = p.get("context", "")
+        if prev and p.get("context_source_mode") == "handoffs":
+            return {"status": "fresh", "estimated_tokens": _estimate_tokens(prev),
+                    "engine": "deterministic", "ai_calls": 0,
+                    "source_mode": "handoffs"}
+        # No prior checkpoint: fall through to a full build.
 
-    documents = [(f"{name}-handoff-{i+1}.md", block) for i, (_, block) in enumerate(all_docs)]
-    if documents:
-        logger.info("context rebuild project=%s handoffs=%d source_tokens~%d full=%s",
-                    name, len(documents), sum(_estimate_tokens(t) for _, t in documents), full)
-        compiled = _deterministic_compress(documents, profile="balanced", target_tokens=12000)
-        candidate = compiled["context"]
-        missing = compiled.get("missing_hard", [])
-        if missing:
-            return {"status": "error", "reason": "protected context facts missing",
-                    "protected_missing": len(missing), "ai_calls": 0}
-    else:
-        compiled = {"hard_facts": 0, "corrections": 0, "corrections_reconciled": 0,
-                    "target_tokens": 12000, "elapsed_s": 0, "missing_hard": []}
-        candidate = _render_units([], "balanced", 12000)
+    # Canonical state is derived only from immutable handoffs. Historical AI
+    # conversations and other project files are reference material until the
+    # owner explicitly bootstraps them into a handoff.
+    all_docs, hwm = _all_material(p)
+    if not all_docs:
+        return {"status": "error", "reason": "no handoff material; bootstrap reference material explicitly first",
+                "source_mode": "handoffs-required"}
+    documents = [(f"{name}-material-{i+1}.md", block) for i, (_, block) in enumerate(all_docs)]
+    logger.info("context rebuild project=%s source_docs=%d source_tokens~%d full=%s", name, len(documents), sum(_estimate_tokens(t) for _, t in documents), full)
+    compiled = _deterministic_compress(
+        documents, profile="balanced", target_tokens=12000)
+    candidate = compiled["context"]
 
-    candidate = _overlay_authoritative_context(candidate, snap["state"], tasks)
+    # Hard facts are checked mechanically by the compiler. Refuse to advance
+    # the watermark if even one protected unit was lost.
+    missing = compiled.get("missing_hard", [])
+    if missing:
+        logger.error("deterministic context protection failed for %s: %d missing",
+                     name, len(missing))
+        return {"status": "error", "reason": "protected context facts missing",
+                "protected_missing": len(missing), "ai_calls": 0}
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     tokens = _estimate_tokens(candidate)
     body = (f"---\ntype: project-context\nproject: {name}\nctx_version: 2\n"
             f"generated_by: deterministic-v14\ngenerated_at: {now}\n"
-            f"source_mode: {source_mode}\ncontext_through: {snap['handoff_hwm']}\n"
-            f"state_mtime: {snap['state_mtime']}\ntasks_mtime: {snap['tasks_mtime']}\n"
-            f"verified: deterministic-protected\nestimated_tokens: {tokens}\n"
-            f"source_handoffs: {len(all_docs)}\nsource_state: {str(state_meaningful).lower()}\n"
-            f"source_tasks: {len(tasks)}\nprotected_facts: {compiled.get('hard_facts', 0)}\n"
+            f"source_mode: handoffs\ncontext_through: {hwm}\nverified: deterministic-protected\n"
+            f"estimated_tokens: {tokens}\nsource_handoffs: {len(documents)}\n"
+            f"protected_facts: {compiled.get('hard_facts', 0)}\n"
             f"corrections: {compiled.get('corrections', 0)}\n"
             f"corrections_reconciled: {compiled.get('corrections_reconciled', 0)}\n"
             f"protected_missing: 0\n---\n\n{candidate.strip()}\n")
@@ -1411,16 +1292,15 @@ def generate_context(name: str, full: bool = False) -> dict:
     except OSError as e:
         return {"status": "error", "reason": f"vault not writable: {e}"}
     invalidate()
-    return {"status": "generated", "files": len(all_docs), "source_mode": source_mode,
-            "source_handoffs": len(all_docs), "source_state": state_meaningful,
-            "source_tasks": len(tasks), "verified": True,
-            "verification": "deterministic-protected", "estimated_tokens": tokens,
-            "protected_facts": compiled.get("hard_facts", 0),
+    return {"status": "generated", "files": len(documents), "source_mode": "handoffs",
+            "verified": True, "verification": "deterministic-protected",
+            "estimated_tokens": tokens, "protected_facts": compiled.get("hard_facts", 0),
             "corrections": compiled.get("corrections", 0),
             "corrections_reconciled": compiled.get("corrections_reconciled", 0),
-            "protected_missing": 0, "engine": "deterministic", "ai_calls": 0,
-            "target_tokens": compiled.get("target_tokens"),
+            "protected_missing": 0, "engine": "deterministic",
+            "ai_calls": 0, "target_tokens": compiled.get("target_tokens"),
             "elapsed_s": compiled.get("elapsed_s", 0)}
+
 
 _RUNBOOK_SYSTEM = _SYSTEM + (
     " Record ONLY what the material states. If something is not in the "
