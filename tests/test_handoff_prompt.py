@@ -102,6 +102,11 @@ FACTS
         self.assertNotIn("lots of file detail", checkpoint)
         self.assertNotIn("historical low-value fact", checkpoint)
 
+        # Section separators must be real newlines, not literal backslash-n text.
+        self.assertIn("\nSTATE\n", checkpoint)
+        self.assertIn("\nOPEN\n", checkpoint)
+        self.assertNotIn("\\nSTATE\\n", checkpoint)
+
     def test_project_specific_prompt_is_scoped_and_contains_checkpoint(self):
         self._write_context()
 
@@ -115,6 +120,8 @@ FACTS
         self.assertIn("Add project-specific handoff prompts.", prompt)
         self.assertIn("Use the ENTIRE conversation as the evidence", prompt)
         self.assertIn("never infer completion from silence", prompt.lower())
+        self.assertIn("\nSTATE\n", prompt)
+        self.assertNotIn("\\nSTATE\\n", prompt)
 
     def test_generic_prompt_still_contains_slug_list(self):
         prompt = app._prompt_text("handoff")

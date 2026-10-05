@@ -860,12 +860,12 @@ def handoff_prompt_context(name: str) -> str:
     for section in _HANDOFF_PROMPT_SECTIONS:
         body = _context_section(context, section)
         if body and body != "-":
-            parts.append(f"{section}\\n{body}")
+            parts.append(f"{section}\n{body}")
 
     if not parts:
         return "(The canonical checkpoint contains no state-bearing sections.)"
 
-    return "\\n\\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def generate_summary(name: str, full: bool = False) -> dict:
