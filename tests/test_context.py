@@ -298,5 +298,136 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', prompt)
         self.assertIn('Remove playstyle from calculate_tags_optimized.py', prompt)
 
+
+    def test_latest_context_baseline_replaces_older_handoff_history(self):
+        self._handoff('old.md', 'old',
+                      '## What changed\n- CURRENT stale historical state.\n'
+                      '## Next steps\n- Old task that should be absorbed by baseline.', 1000)
+        baseline = self._handoff('baseline.md', 'baseline',
+                                 '## Current state\n- CURRENT consolidated state.\n'
+                                 '## Next steps\n- Only real remaining task.', 2000)
+        text = baseline.read_text(encoding='utf-8')
+        text = text.replace('title: baseline\n',
+                            'title: baseline\ncontext_baseline: true\n')
+        baseline.write_text(text, encoding='utf-8')
+        os.utime(baseline, (2000, 2000))
+        self._handoff('later.md', 'later',
+                      '## What changed\n- CURRENT later feature added.', 3000)
+        register.invalidate()
+
+        docs, _ = register._all_material(register.project('Demo'))
+        joined = '\n'.join(body for _, body in docs)
+        self.assertNotIn('stale historical state', joined)
+        self.assertNotIn('Old task that should be absorbed', joined)
+        self.assertIn('CURRENT consolidated state.', joined)
+        self.assertIn('CURRENT later feature added.', joined)
+        self.assertEqual(len(docs), 2)
+
+    def test_dedupe_prefers_newest_repeated_next_item(self):
+        docs = [
+            ('one.md', '## Next steps\n- Deploy the refreshed Register container.'),
+            ('two.md', '## Next steps\n- Deploy the refreshed Register container.'),
+        ]
+        units = register._parse_units(docs, reconcile=False)
+        deduped = register._dedupe_units(units)
+        matches = [u for u in deduped
+                   if 'Deploy the refreshed Register container.' in u['text']]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]['order'], max(u['order'] for u in units))
+
+    def test_identical_corrections_dedupe_but_chain_survives(self):
+        docs = [
+            ('one.md', '## Corrections to previous records\n'
+             '- CORRECTION | PREVIOUS: port 5000 | CURRENT: port 5050 | '
+             'AFFECTS: AI context | EVIDENCE: verified'),
+            ('two.md', '## Corrections to previous records\n'
+             '- CORRECTION | PREVIOUS: port 5000 | CURRENT: port 5050 | '
+             'AFFECTS: AI context | EVIDENCE: verified'),
+            ('three.md', '## Corrections to previous records\n'
+             '- CORRECTION | PREVIOUS: port 5050 | CURRENT: port 6060 | '
+             'AFFECTS: AI context | EVIDENCE: verified later'),
+        ]
+        units = register._parse_units(docs, reconcile=False)
+        deduped = register._dedupe_units(units)
+        corrections = [u for u in deduped if u['section'] == 'CORRECTIONS']
+        self.assertEqual(len(corrections), 2)
+        joined = '\n'.join(u['text'] for u in corrections)
+        self.assertIn('CURRENT: port 5050', joined)
+        self.assertIn('CURRENT: port 6060', joined)
+
+    def test_consolidate_handoffs_creates_baseline_and_rebuilds_context(self):
+        self._handoff('old.md', 'old',
+                      '## What changed\n- CURRENT old implementation existed.\n'
+                      '## Next steps\n- Replace old implementation.', 1000)
+        self._handoff('new.md', 'new',
+                      '## Current state\n- CURRENT replacement is live.\n'
+                      '## Open issues\n- Verify migration metrics.', 2000)
+
+        canonical = """# Legacy handoff consolidation
+## Objective
+- Continue Demo.
+## Current state
+- CURRENT replacement is live.
+## Corrections to previous records
+none
+## Decisions and constraints
+- Use the replacement implementation.
+## Environment and deployment
+- not documented
+## Workarounds and gotchas
+- Do not return to the old implementation.
+## Code
+- not documented
+## Dependencies and interactions
+- not documented
+## Open issues
+- Verify migration metrics.
+## Next steps
+- Verify migration metrics.
+"""
+        old_complete = register._complete
+        old_key = os.environ.get('GEMINI_API_KEY')
+        os.environ['GEMINI_API_KEY'] = 'test-key'
+        seen = {}
+
+        def fake_complete(system, prompt, validator, expected, **kwargs):
+            seen['backend'] = kwargs.get('backend')
+            self.assertTrue(validator(canonical))
+            return canonical
+
+        register._complete = fake_complete
+        try:
+            result = register.consolidate_handoffs('Demo')
+        finally:
+            register._complete = old_complete
+            if old_key is None:
+                os.environ.pop('GEMINI_API_KEY', None)
+            else:
+                os.environ['GEMINI_API_KEY'] = old_key
+
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(result['ai_backend'], 'gemini')
+        self.assertEqual(result['source_handoffs'], 2)
+        self.assertEqual(seen['backend'], 'gemini')
+
+        register.invalidate()
+        p = register.project('Demo')
+        baseline_files = []
+        for f in p['handoffs']:
+            parsed = register._read(register.VAULT_PATH / f['path'])
+            if parsed and parsed[0].get('context_baseline'):
+                baseline_files.append(f)
+        self.assertEqual(len(baseline_files), 1)
+
+        docs, _ = register._all_material(p)
+        self.assertEqual(len(docs), 1)
+        joined = '\n'.join(body for _, body in docs)
+        self.assertIn('CURRENT replacement is live.', joined)
+        self.assertNotIn('CURRENT old implementation existed.', joined)
+
+        info = register.context_info('Demo')
+        self.assertTrue(info['has_context'])
+        self.assertIn('CURRENT replacement is live.', info['context'])
+
 if __name__ == '__main__':
     unittest.main()

@@ -570,9 +570,34 @@ def _material(p: dict, since: float) -> tuple[list[str], float]:
     return blocks, hwm
 
 
-def _all_material(p: dict) -> tuple[list[tuple[str, str]], float]:
-    """Read every canonical handoff. Reference files are never implicit input."""
+def _canonical_handoff_files(p: dict) -> list[dict]:
+    """Return canonical handoffs from the newest explicit context baseline onward.
+
+    A baseline is a normal immutable handoff with `context_baseline: true`.
+    Older handoffs remain in the vault for audit/history, but the baseline
+    explicitly states that it has reconciled them and therefore becomes the
+    starting point for derived current context.
+    """
     files = sorted(p["handoffs"], key=lambda f: f["mtime"])
+    baseline_index = None
+    for idx, f in enumerate(files):
+        parsed = _read(VAULT_PATH / f["path"])
+        if parsed is None:
+            continue
+        meta, _ = parsed
+        if bool(meta.get("context_baseline", False)):
+            baseline_index = idx
+    return files[baseline_index:] if baseline_index is not None else files
+
+
+def _all_material(p: dict) -> tuple[list[tuple[str, str]], float]:
+    """Read canonical handoffs from the latest baseline onward.
+
+    Reference files are never implicit input. Historical handoffs before an
+    explicit baseline remain immutable evidence but are not repeatedly folded
+    into current context after that baseline has reconciled them.
+    """
+    files = _canonical_handoff_files(p)
     docs, hwm = [], 0.0
     for f in files:
         parsed = _read(VAULT_PATH / f["path"])
@@ -712,6 +737,162 @@ Begin exactly with `# Legacy reference bootstrap`.'''
             "estimated_tokens": _estimate_tokens(canonical),
             "evidence_tokens": _estimate_tokens(evidence),
             "ai_backend": backend, "ai_calls": 1}
+
+
+def consolidate_handoffs(name: str) -> dict:
+    """Create one explicit Gemini-generated baseline from existing handoffs.
+
+    This is a one-time migration for projects whose historical handoffs predate
+    the project-specific reconciliation prompt. Source handoffs are never
+    modified or deleted. The generated baseline becomes the canonical starting
+    point for subsequent deterministic CTX builds.
+
+    Gemini is required deliberately: semantic lifecycle reconciliation belongs
+    in an AI synthesis step, not in deterministic guessing.
+    """
+    p = project(name)
+    if not p:
+        return {"status": "error", "reason": "project not found"}
+    name = p["name"]
+
+    files = sorted(p.get("handoffs", []), key=lambda f: f["mtime"])
+    if not files:
+        return {"status": "error", "reason": "no handoff history to consolidate"}
+
+    for f in files:
+        parsed = _read(VAULT_PATH / f["path"])
+        if parsed and bool(parsed[0].get("context_baseline", False)):
+            return {"status": "error", "reason": "project already has a context baseline"}
+
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        return {"status": "error", "reason": "GEMINI_API_KEY required for handoff consolidation"}
+
+    docs = []
+    for f in files:
+        parsed = _read(VAULT_PATH / f["path"])
+        if parsed is None:
+            continue
+        text = parsed[1].strip()
+        if text:
+            docs.append((f["title"], f"### {f['title']} — handoff note\n\n{text}"))
+    if not docs:
+        return {"status": "error", "reason": "handoff history is empty or unreadable"}
+
+    try:
+        evidence, batches = _batch_project_material(name, docs)
+    except Exception as e:
+        logger.error("handoff consolidation evidence failed for %s: %s", name, e)
+        return {"status": "error", "reason": str(e)}
+
+    headings = (
+        "## Objective",
+        "## Current state",
+        "## Corrections to previous records",
+        "## Decisions and constraints",
+        "## Environment and deployment",
+        "## Workarounds and gotchas",
+        "## Code",
+        "## Dependencies and interactions",
+        "## Open issues",
+        "## Next steps",
+    )
+
+    prompt = f"""Project: "{name}"
+
+LEGACY HANDOFF EVIDENCE — OLDEST TO NEWEST:
+<evidence>
+{evidence}
+</evidence>
+
+TASK: Produce one compact CURRENT baseline handoff that reconciles the entire
+legacy handoff history above.
+
+This is a migration boundary. Older handoffs remain immutable history, but
+normal future CTX generation begins with this baseline plus new handoffs.
+
+Rules:
+- Reconstruct what is true/useful NOW, not a chronological transcript.
+- Deduplicate repeated facts, repeated corrections, and repeated task wording.
+- For every historical OPEN/NEXT item, decide from later evidence whether it
+  was completed, remains unresolved, was rejected/superseded, or cannot safely
+  be resolved. Only still-unfinished work belongs in Open issues/Next steps.
+- Never infer completion merely from silence.
+- CURRENT/implemented facts belong in Current state.
+- Proposals that were not implemented must not be presented as current.
+- Explicit CORRECTION records outrank older conflicting facts.
+- Collapse correction chains to the final useful authoritative position while
+  retaining a correction where the former value is important to avoid mistakes.
+- Preserve useful implementation literals: filenames/paths, symbols, endpoints,
+  environment variables, schemas, versions, ports, commands, numeric values,
+  and important error text.
+- Keep important rejected approaches/gotchas where they prevent repeated work.
+- Do not invent facts.
+- Prefer terse bullets.
+- Target 2500-4000 tokens; hard maximum 5000 estimated tokens.
+
+Use EXACTLY these headings, once each, in this order:
+{chr(10).join(headings)}
+
+Begin exactly with `# Legacy handoff consolidation`.
+"""
+
+    def valid(text: str) -> bool:
+        text = (text or "").strip()
+        if not text.startswith("# Legacy handoff consolidation"):
+            return False
+        if any(text.count(h) != 1 for h in headings):
+            return False
+        positions = [text.find(h) for h in headings]
+        if positions != sorted(positions):
+            return False
+        return _estimate_tokens(text) <= 5000
+
+    try:
+        canonical = _complete(
+            _CONTEXT_SYSTEM, prompt, valid,
+            "'# Legacy handoff consolidation' with all required sections",
+            backend="gemini")
+    except Exception as e:
+        logger.error("handoff consolidation synthesis failed for %s: %s", name, e)
+        return {"status": "error", "reason": str(e),
+                "source_mode": "legacy-handoff-consolidation"}
+
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y-%m-%d")
+    path = project_dir(name) / "handoffs" / f"baseline-handoffs-{stamp}.md"
+    if path.exists():
+        return {"status": "error", "reason": "handoff baseline already exists today"}
+
+    body = (
+        f"---\ntype: handoff\nproject: {name}\ndate: {stamp}\n"
+        f"title: Legacy handoff consolidation\n"
+        f"source_mode: legacy-handoff-consolidation\n"
+        f"context_baseline: true\n"
+        f"source_handoffs: {len(docs)}\n"
+        f"generated_by: {GEMINI_MODEL}\n"
+        f"evidence_batches: {len(batches)}\n"
+        f"evidence_tokens: {_estimate_tokens(evidence)}\n"
+        f"estimated_tokens: {_estimate_tokens(canonical)}\n---\n\n"
+        + canonical.strip() + "\n")
+    try:
+        _atomic_write(path, body)
+    except OSError as e:
+        return {"status": "error", "reason": f"vault not writable: {e}"}
+
+    invalidate()
+    ctx = generate_context(name, full=True)
+    return {
+        "status": "generated",
+        "path": str(path.relative_to(VAULT_PATH)),
+        "source_mode": "legacy-handoff-consolidation",
+        "source_handoffs": len(docs),
+        "evidence_batches": len(batches),
+        "evidence_tokens": _estimate_tokens(evidence),
+        "estimated_tokens": _estimate_tokens(canonical),
+        "ai_backend": "gemini",
+        "ai_calls": 1,
+        "context": ctx,
+    }
 
 
 def _batch_project_material(name: str, docs: list[tuple[str, str]]) -> tuple[str, list[dict]]:
@@ -1626,30 +1807,49 @@ def _parse_units(documents, reconcile=True):
 
 
 def _dedupe_units(units):
-    out=[]
-    for u in units:
-        # Correction records are an audit/precedence chain, not ordinary
-        # repetitive prose. Never collapse them, even when two corrections are
-        # lexically similar (for example A→B followed later by B→C).
+    """Remove obvious repetition while preferring the newest representation.
+
+    This is deliberately not lifecycle inference. It only removes lexical
+    duplicates/near-duplicates. Distinct correction chains remain intact, while
+    normalised-identical correction records collapse to the newest occurrence.
+    """
+    out_rev=[]
+    exact_seen=set()
+    correction_seen=set()
+    protected_sections={"CORRECTIONS","NEXT","INV","OPEN","GOAL"}
+
+    for u in reversed(units):
+        norm = _norm(u["text"]).lower()
+
         if u["section"] == "CORRECTIONS":
-            out.append(u)
+            if norm in correction_seen:
+                continue
+            correction_seen.add(norm)
+            out_rev.append(u)
             continue
+
+        exact_key=(u["section"], norm)
+        if exact_key in exact_seen:
+            continue
+
         duplicate=False
-        for prev in reversed(out[-100:]):
-            same = _norm(u["text"]).lower()==_norm(prev["text"]).lower()
-            near = _similar(u["text"],prev["text"])
-            same_section = u["section"]==prev["section"]
-            protected_sections={"CORRECTIONS","NEXT","INV","OPEN","GOAL"}
+        for newer in out_rev[:200]:
+            if newer["section"] == "CORRECTIONS":
+                continue
+            same = norm == _norm(newer["text"]).lower()
+            near = _similar(u["text"], newer["text"])
+            same_section = u["section"] == newer["section"]
             cross_ok=(u["section"] not in protected_sections and
-                      prev["section"] not in protected_sections)
+                      newer["section"] not in protected_sections)
             if (same or near) and (same_section or cross_ok):
-                # Keep the higher-value representation if the duplicate crossed sections.
-                if cross_ok and prev["score"] < u["score"]:
-                    out.remove(prev)
-                    break
-                duplicate=True; break
-        if not duplicate: out.append(u)
-    return out
+                duplicate=True
+                break
+
+        if not duplicate:
+            exact_seen.add(exact_key)
+            out_rev.append(u)
+
+    return sorted(out_rev, key=lambda x: x["order"])
 
 
 def _render_units(selected, profile, target):

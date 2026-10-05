@@ -191,6 +191,11 @@ def api_bootstrap(name):
     return _start(f"bootstrap:{name}", lambda: register.bootstrap_handoff(name))
 
 
+@app.route("/api/consolidate/<name>", methods=["POST"])
+def api_consolidate(name):
+    return _start(f"consolidate:{name}", lambda: register.consolidate_handoffs(name))
+
+
 @app.route("/api/context/<name>", methods=["GET", "POST"])
 def api_context(name):
     if request.method == "POST":
