@@ -9,18 +9,49 @@ Begin the output with exactly this YAML frontmatter, filled in:
 ```
 ---
 type: handoff
-project: <SLUG>
+project: <PROJECT>
 date: <today's date, YYYY-MM-DD>
 title: <one-line description of this session>
 ---
 ```
 
-The `project` value MUST be copied exactly from the list at the end of
-this prompt, including its capitalisation. Do not invent a new slug,
-abbreviate one, or coin a variant — an invented slug creates a duplicate
-project, and a different capitalisation breaks file syncing. If none of
-the listed slugs fits, use the literal value `NEW` and say so in one line
-at the very end of your output, after the document.
+<PROJECT_SELECTION_RULE>
+
+Before writing the handoff, reconcile the full conversation against the
+project checkpoint below.
+
+PROJECT: <PROJECT>
+REPOSITORY: <REPO>
+
+The checkpoint describes the project BEFORE this conversation. It is evidence
+from previous handoffs, not a description that you should blindly repeat.
+
+<prior_project_checkpoint>
+<CURRENT_CHECKPOINT>
+</prior_project_checkpoint>
+
+Your most important job is to work out what THIS conversation changed.
+
+For every prior OPEN or NEXT item:
+- if it was completed in this conversation, explicitly record that it is now
+  completed/current and do not carry it forward as unfinished work;
+- if it is still unfinished, carry it forward under Open issues or Next steps;
+- if it was abandoned, rejected, replaced, or made irrelevant, say so
+  explicitly using REJECTED or SUPERSEDED;
+- if its wording changed but the work remains outstanding, preserve the actual
+  remaining work rather than creating a second duplicate task.
+
+For prior STATE/current facts:
+- preserve them only when this conversation did not replace or disprove them;
+- if this conversation changed a value, architecture, deployment state,
+  implementation status, path, command, dependency, or decision, record the
+  new value and add a strict CORRECTION when the previous record is now wrong;
+- never mark something completed merely because it was proposed, discussed,
+  planned, approved, or reacted to positively.
+
+Use the ENTIRE conversation as the evidence for this reconciliation. You are
+the AI that participated in the work, so perform this reconciliation here
+rather than leaving it for a later summariser to infer.
 
 Then use these sections as Markdown H2 headings, in this order:
 
@@ -32,6 +63,11 @@ why.
 features added, bugs fixed, files created or modified. Be concrete and
 specific. Name files and functions rather than describing changes in the
 abstract.
+
+**Current state** Reconcile the starting checkpoint with this entire
+conversation and state the important CURRENT position at session end. Include
+implemented/running facts that the next AI genuinely needs. Do not simply copy
+the prior checkpoint. Do not put planned or unresolved work here.
 
 **Corrections to previous records** Review the current conversation for any
 evidence that a fact in an earlier handoff, debrief, project status, AI context,
@@ -89,10 +125,15 @@ system — other services it talks to, files that must change together,
 anything elsewhere that would break if this changed. Explicitly note
 anything that would fail silently rather than erroring.
 
-**Next steps** Unfinished work, known bugs, and logical next actions, in
-priority order. For each, say enough that I could start it cold without
-rereading this conversation. Include anything I said I would do but
-haven't yet, and anything I explicitly deferred.
+**Open issues** Unresolved problems, blockers, uncertainties, or previously
+open items that remain unresolved at session end. Do not include an old issue
+if this conversation solved it. Write `none` if there are no known open issues.
+
+**Next steps** Unfinished work and logical next actions, in priority order.
+Reconcile this against the starting checkpoint: remove work completed in this
+conversation, retain work that really remains, explicitly account for deferred
+items, and add genuinely new next actions. For each item say enough that I
+could start it cold without rereading this conversation.
 
 Rules for the whole document:
 
@@ -128,6 +169,14 @@ project's compact AI checkpoint:
   a corrected PREVIOUS value as CURRENT elsewhere in this handoff.
 - Do not call a proposal CURRENT unless it was actually implemented or the
   conversation explicitly established it as the chosen design.
+- Treat the prior checkpoint as the starting position, not as text to repeat.
+  The finished handoff must reflect the state AFTER this conversation.
+- Never carry a prior NEXT/OPEN item forward merely because it existed before.
+  First decide from the full conversation whether it was completed, remains
+  open, or was rejected/superseded.
+- Conversely, never infer completion from silence. A prior unfinished item
+  remains unfinished unless this conversation provides evidence that it was
+  completed, rejected, superseded, or no longer applicable.
 
 ---
 

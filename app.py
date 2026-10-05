@@ -306,15 +306,58 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
             "(no repo recorded — set one on the project page)"
         return template.replace("<PROJECT>", name).replace("<REPO>", repo)
 
-    return template.replace("<SLUG_LIST>", _slug_list())
+
+    if project:
+        p = register.project(project)
+        if p:
+            name = p["name"]
+            repo = (
+                p.get("repo")
+                or "(no repo recorded — set one on the project page)"
+            )
+            checkpoint = register.handoff_prompt_context(name)
+            selection_rule = (
+                f"This prompt is already scoped to the exact Register project "
+                f"`{name}`. Use exactly `{name}` in the `project:` field. "
+                "Do not invent, abbreviate, rename, or change its capitalisation."
+            )
+            return (
+                template
+                .replace("<PROJECT>", name)
+                .replace("<REPO>", repo)
+                .replace("<PROJECT_SELECTION_RULE>", selection_rule)
+                .replace("<CURRENT_CHECKPOINT>", checkpoint)
+                .replace("<SLUG_LIST>", f"  {name}")
+            )
+
+    selection_rule = (
+        "Choose the project value by copying one exact slug from the list at "
+        "the end of this prompt, including its capitalisation. Do not invent "
+        "a new slug, abbreviate one, or coin a variant. If none fits, use the "
+        "literal value `NEW` and say so in one line at the very end."
+    )
+    return (
+        template
+        .replace("<PROJECT>", "<SLUG>")
+        .replace("<REPO>", "(not project-scoped)")
+        .replace("<PROJECT_SELECTION_RULE>", selection_rule)
+        .replace(
+            "<CURRENT_CHECKPOINT>",
+            "(No project-specific checkpoint supplied. Use the full "
+            "conversation and choose a project from the slug list below.)",
+        )
+        .replace("<SLUG_LIST>", _slug_list())
+    )
+
 
 
 @app.route("/prompt")
 @app.route("/prompt/<kind>")
 def prompt_page(kind: str = "handoff"):
     """Plain text so it can be curled, piped, or selected and copied.
-    /prompt            session handoff, with current slugs
-    /prompt/debrief?project=Name   full project debrief, scoped to one
+    /prompt                         generic session handoff with current slugs
+    /prompt?project=Name            project-specific handoff with prior CTX
+    /prompt/debrief?project=Name    full project debrief, scoped to one
     """
     if kind not in ("handoff", "debrief"):
         kind = "handoff"

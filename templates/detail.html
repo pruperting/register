@@ -29,6 +29,9 @@
   </button>
   {% if p.repo %}<a href="{{ p.repo }}" class="ghost sm" target="_blank">open repo ↗</a>{% endif %}
   <button class="ghost sm"
+          data-prompt="/prompt?project={{ p.name | urlencode }}"
+          title="End-of-session handoff prompt with this project's current checkpoint">handoff prompt</button>
+  <button class="ghost sm"
           data-prompt="/prompt/debrief?project={{ p.name | urlencode }}"
           title="Full technical debrief prompt, scoped to this project — paste the result into a new AI chat">debrief prompt</button>
   <button class="ghost sm" id="rename-btn" data-p="{{ p.name }}">rename</button>

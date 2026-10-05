@@ -785,6 +785,89 @@ def _summary_state_semantics(context: str) -> str:
     return "\n\n".join(parts)
 
 
+
+_HANDOFF_PROMPT_SECTIONS = (
+    "GOAL",
+    "STACK",
+    "ARCH",
+    "STATE",
+    "CORRECTIONS",
+    "DEC",
+    "INV",
+    "BUG",
+    "OPEN",
+    "NEXT",
+    "REJECTED",
+)
+
+_HANDOFF_PROMPT_HEADERS = (
+    "GOAL",
+    "STACK",
+    "ARCH",
+    "FILES",
+    "STATE",
+    "CORRECTIONS",
+    "DEC",
+    "INV",
+    "BUG",
+    "OPEN",
+    "NEXT",
+    "REJECTED",
+    "FACTS",
+)
+
+
+def _context_section(context: str, section: str) -> str:
+    """Return one CTX/2 section body without interpreting it."""
+    header_re = "|".join(re.escape(x) for x in _HANDOFF_PROMPT_HEADERS)
+    match = re.search(
+        rf"(?ms)^{re.escape(section)}\s*$\n"
+        rf"(.*?)(?=^(?:{header_re})\s*$|\Z)",
+        context or "",
+    )
+    return match.group(1).strip() if match else ""
+
+
+def handoff_prompt_context(name: str) -> str:
+    """Build the prior-project checkpoint supplied to the conversation AI.
+
+    Handoffs remain the sole evolving project evidence. Refresh deterministic
+    CTX first so the conversation AI sees the newest canonical checkpoint.
+    This function never calls Gemini or Ollama.
+    """
+    p = project(name)
+    if not p:
+        return "(Project not found.)"
+
+    if p.get("handoff_count"):
+        result = generate_context(name)
+        if result.get("status") == "error":
+            return (
+                "(Canonical checkpoint could not be generated: "
+                + str(result.get("reason", "unknown error"))
+                + ")"
+            )
+
+    info = context_info(name)
+    context = (info.get("context") or "").strip()
+    if not context:
+        return (
+            "(No canonical checkpoint exists yet. This may be the project's "
+            "first structured handoff.)"
+        )
+
+    parts = []
+    for section in _HANDOFF_PROMPT_SECTIONS:
+        body = _context_section(context, section)
+        if body and body != "-":
+            parts.append(f"{section}\\n{body}")
+
+    if not parts:
+        return "(The canonical checkpoint contains no state-bearing sections.)"
+
+    return "\\n\\n".join(parts)
+
+
 def generate_summary(name: str, full: bool = False) -> dict:
     """Generate the human project summary from deterministic canonical CTX/2.
 
@@ -1323,12 +1406,12 @@ _COMPRESS_HEADINGS = {
     "environment and deployment":"STACK","environment":"STACK","deployment":"STACK",
     "dependencies and interactions":"ARCH","architecture":"ARCH",
     "code":"FILES","files created":"FILES","files modified":"FILES",
-    "what changed":"STATE","deployment status as of session end":"STATE","state":"STATE",
+    "what changed":"STATE","current state":"STATE","deployment status as of session end":"STATE","state":"STATE",
     "corrections to previous records":"CORRECTIONS",
     "corrections to earlier records":"CORRECTIONS","corrections":"CORRECTIONS",
     "decisions and constraints":"DEC","decided and implemented":"DEC",
     "constraints carried forward":"INV","workarounds and gotchas":"BUG",
-    "bug":"BUG","bugs":"BUG","open":"OPEN","open questions":"OPEN",
+    "bug":"BUG","bugs":"BUG","open":"OPEN","open issues":"OPEN","open questions":"OPEN",
     "next steps":"NEXT","suggested but not acted on":"OPEN",
     "conclusions i reached during the session that were wrong":"REJECTED",
     "rejected":"REJECTED","estate changes":"FACTS",
