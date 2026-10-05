@@ -8,7 +8,6 @@
   <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
   <span class="dim">
     {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }} ·
-    {{ p.open_task_count }} open task{{ 's' if p.open_task_count != 1 }} ·
     {{ p.reference_count }} reference file{{ 's' if p.reference_count != 1 }}
     {%- if p.days_ago < 9000 %} · last activity {{ p.days_ago }}d ago{% endif %}
   </span>
@@ -38,39 +37,6 @@
     {% if p.archived %}unarchive{% else %}archive{% endif %}
   </button>
 </div>
-
-<section class="panel">
-  <div class="phead2">
-    <h2>tasks</h2>
-    <span class="dim">{{ p.task_counts.todo }} todo · {{ p.task_counts.doing }} doing · {{ p.task_counts.blocked }} blocked · {{ p.task_counts.done }} done</span>
-    <span class="spacer"></span>
-    <button class="ghost sm task-add-btn">add task</button>
-    <a class="ghost sm" href="{{ obsidian_uri(p.rel_dir + '/tasks.md') }}">obsidian ↗</a>
-  </div>
-  <p class="hint"><code>tasks.md</code> is the explicit work ledger. Task state changes only when you edit it or use these controls; handoffs and AI summaries do not silently change task state.</p>
-  {% for status in ('doing', 'blocked', 'todo', 'done') %}
-    {% if p.tasks_by_status[status] %}
-    <h3>{{ status.upper() }}</h3>
-    <ul class="files task-list">
-      {% for task in p.tasks_by_status[status] %}
-      <li>
-        <span class="tag">{{ task.id }}</span>
-        <span class="task-text">{{ task.text }}</span>
-        <span class="spacer"></span>
-        <select class="task-status" data-id="{{ task.id }}">
-          {% for option in ('todo', 'doing', 'blocked', 'done') %}
-          <option value="{{ option }}" {% if option == task.status %}selected{% endif %}>{{ option }}</option>
-          {% endfor %}
-        </select>
-        <button class="ghost sm task-edit" data-id="{{ task.id }}" data-text="{{ task.text | e }}">edit</button>
-        <button class="ghost sm task-delete" data-id="{{ task.id }}">delete</button>
-      </li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-  {% endfor %}
-  {% if not p.task_count %}<p class="dim">No tasks yet.</p>{% endif %}
-</section>
 
 <section class="panel">
   <div class="phead2">
@@ -170,33 +136,6 @@
 {% block scripts %}
 <script>
 const P = "{{ p.name }}";
-const taskRequest = async (url, method, body=null) => {
-  const opts = {method, headers:{'Content-Type':'application/json'}};
-  if (body !== null) opts.body = JSON.stringify(body);
-  const r = await fetch(url, opts);
-  const j = await r.json();
-  if (j.status !== 'ok') { alert(j.reason || 'task operation failed'); return false; }
-  location.reload();
-  return true;
-};
-document.querySelector('.task-add-btn').addEventListener('click', async () => {
-  const text = prompt('New task:');
-  if (!text || !text.trim()) return;
-  await taskRequest(`/api/tasks/${encodeURIComponent(P)}`, 'POST', {text});
-});
-document.querySelectorAll('.task-status').forEach(el => el.addEventListener('change', async (e) => {
-  e.target.disabled = true;
-  if (!await taskRequest(`/api/tasks/${encodeURIComponent(P)}/${encodeURIComponent(e.target.dataset.id)}`, 'POST', {status:e.target.value})) e.target.disabled = false;
-}));
-document.querySelectorAll('.task-edit').forEach(el => el.addEventListener('click', async (e) => {
-  const text = prompt(`Edit ${e.target.dataset.id}:`, e.target.dataset.text);
-  if (text === null || !text.trim()) return;
-  await taskRequest(`/api/tasks/${encodeURIComponent(P)}/${encodeURIComponent(e.target.dataset.id)}`, 'POST', {text});
-}));
-document.querySelectorAll('.task-delete').forEach(el => el.addEventListener('click', async (e) => {
-  if (!confirm(`Delete task ${e.target.dataset.id}?`)) return;
-  await taskRequest(`/api/tasks/${encodeURIComponent(P)}/${encodeURIComponent(e.target.dataset.id)}`, 'DELETE');
-}));
 document.getElementById('status-sel').addEventListener('change', async (e) => {
   e.target.disabled = true;
   const r = await fetch(`/api/status/${encodeURIComponent(P)}`, { method:'POST',
