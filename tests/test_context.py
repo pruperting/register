@@ -438,5 +438,43 @@ none
         self.assertIn('re.finditer(pattern, text)', source)
 
 
+    def test_consolidation_redacts_model_output_before_write(self):
+        self._handoff('old.md', 'old', '## Current state\n- CURRENT demo is running.', 1000)
+        canonical = (
+            '# Legacy handoff consolidation\n'
+            '## Objective\n- Continue Demo.\n'
+            '## Current state\n- CURRENT demo is running.\n'
+            '## Corrections to previous records\nnone\n'
+            '## Decisions and constraints\n- none\n'
+            '## Environment and deployment\n'
+            '- API key AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12 must never persist.\n'
+            '## Workarounds and gotchas\n- none\n'
+            '## Code\n- none\n'
+            '## Dependencies and interactions\n- none\n'
+            '## Open issues\nnone\n'
+            '## Next steps\nnone\n'
+        )
+        old_complete = register._complete
+        old_key = os.environ.get('GEMINI_API_KEY')
+        os.environ['GEMINI_API_KEY'] = 'test-key'
+        def fake_complete(system, prompt, validator, expected, **kwargs):
+            self.assertTrue(validator(canonical))
+            return canonical
+        register._complete = fake_complete
+        try:
+            result = register.consolidate_handoffs('Demo')
+        finally:
+            register._complete = old_complete
+            if old_key is None:
+                os.environ.pop('GEMINI_API_KEY', None)
+            else:
+                os.environ['GEMINI_API_KEY'] = old_key
+        self.assertEqual(result['status'], 'generated')
+        self.assertGreaterEqual(result['output_redactions'].get('google_api_key', 0), 1)
+        baseline = register.VAULT_PATH / result['path']
+        written = baseline.read_text(encoding='utf-8')
+        self.assertNotIn('AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12', written)
+        self.assertIn('[REDACTED GOOGLE API KEY]', written)
+
 if __name__ == '__main__':
     unittest.main()

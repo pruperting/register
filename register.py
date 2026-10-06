@@ -784,6 +784,15 @@ def consolidate_handoffs(name: str) -> dict:
         logger.error("handoff consolidation evidence failed for %s: %s", name, e)
         return {"status": "error", "reason": str(e)}
 
+    # Legacy handoffs may contain credentials. Reuse the existing synthesis
+    # redactor before evidence leaves the machine.
+    try:
+        from synthesise import _redact_for_external_ai
+        evidence_for_ai, input_redactions = _redact_for_external_ai(evidence)
+    except Exception as e:
+        logger.error("handoff consolidation redaction failed for %s: %s", name, e)
+        return {"status": "error", "reason": f"redaction failed: {e}"}
+
     headings = (
         "## Objective",
         "## Current state",
@@ -801,7 +810,7 @@ def consolidate_handoffs(name: str) -> dict:
 
 LEGACY HANDOFF EVIDENCE — OLDEST TO NEWEST:
 <evidence>
-{evidence}
+{evidence_for_ai}
 </evidence>
 
 TASK: Produce one compact CURRENT baseline handoff that reconciles the entire
@@ -823,8 +832,11 @@ Rules:
 - Collapse correction chains to the final useful authoritative position while
   retaining a correction where the former value is important to avoid mistakes.
 - Preserve useful implementation literals: filenames/paths, symbols, endpoints,
-  environment variables, schemas, versions, ports, commands, numeric values,
-  and important error text.
+  environment variable NAMES, schemas, versions, ports, commands, numeric
+  values, and important error text.
+- Never reproduce API keys, passwords, tokens, private keys, secret values, or
+  other credential material. Preserve only the fact that a security issue
+  existed, never the secret value itself.
 - Keep important rejected approaches/gotchas where they prevent repeated work.
 - Do not invent facts.
 - Prefer terse bullets.
@@ -897,6 +909,8 @@ Begin exactly with `# Legacy handoff consolidation`.
             "source_mode": "legacy-handoff-consolidation",
         }
 
+    canonical, output_redactions = _redact_for_external_ai(canonical)
+
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d")
     path = project_dir(name) / "handoffs" / f"baseline-handoffs-{stamp}.md"
@@ -912,6 +926,8 @@ Begin exactly with `# Legacy handoff consolidation`.
         f"generated_by: {GEMINI_MODEL}\n"
         f"evidence_batches: {len(batches)}\n"
         f"evidence_tokens: {_estimate_tokens(evidence)}\n"
+        f"input_redactions: {sum(input_redactions.values())}\n"
+        f"output_redactions: {sum(output_redactions.values())}\n"
         f"estimated_tokens: {_estimate_tokens(canonical)}\n---\n\n"
         + canonical.strip() + "\n")
     try:
@@ -929,6 +945,8 @@ Begin exactly with `# Legacy handoff consolidation`.
         "evidence_batches": len(batches),
         "evidence_tokens": _estimate_tokens(evidence),
         "estimated_tokens": _estimate_tokens(canonical),
+        "input_redactions": input_redactions,
+        "output_redactions": output_redactions,
         "ai_backend": "gemini",
         "ai_calls": 1,
         "context": ctx,
