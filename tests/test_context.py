@@ -476,5 +476,11 @@ none
         self.assertNotIn('AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12', written)
         self.assertIn('[REDACTED GOOGLE API KEY]', written)
 
+    def test_consolidation_caps_gemini_output(self):
+        source = Path(register.__file__).read_text(encoding='utf-8')
+        self.assertIn('max_output_tokens: int | None = None', source)
+        self.assertIn('max_output_tokens=max_output_tokens', source)
+        self.assertIn('backend="gemini", max_output_tokens=4800', source)
+
 if __name__ == '__main__':
     unittest.main()

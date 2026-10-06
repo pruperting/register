@@ -839,8 +839,13 @@ Rules:
   existed, never the secret value itself.
 - Keep important rejected approaches/gotchas where they prevent repeated work.
 - Do not invent facts.
-- Prefer terse bullets.
-- Target 2500-4000 tokens; hard maximum 5000 estimated tokens.
+- Prefer terse bullets; remove historical explanation when the current fact is enough.
+- Target 2500-3500 tokens; hard maximum 5000 estimated tokens.
+- Budget sections roughly: Objective 150; Current state 900; Corrections 550;
+  Decisions 350; Environment 350; Gotchas 350; Code 250; Dependencies 200;
+  Open issues 350; Next steps 350 tokens. Shorter is better when evidence permits.
+- You MUST finish all ten headings. If space is tight, shorten earlier sections;
+  never omit or truncate later headings.
 
 Use EXACTLY these headings, once each, in this order:
 {chr(10).join(headings)}
@@ -888,12 +893,13 @@ Begin exactly with `# Legacy handoff consolidation`.
         "headings in order: Objective; Current state; Corrections to previous "
         "records; Decisions and constraints; Environment and deployment; "
         "Workarounds and gotchas; Code; Dependencies and interactions; "
-        "Open issues; Next steps"
+        "Open issues; Next steps, with the complete document under 5000 "
+        "estimated tokens"
     )
     try:
         canonical = _complete(
             _CONTEXT_SYSTEM, prompt, valid, expected,
-            backend="gemini")
+            backend="gemini", max_output_tokens=4800)
     except Exception as e:
         logger.error(
             "handoff consolidation synthesis failed for %s: %s; validation=%s; "
@@ -1585,7 +1591,7 @@ def _select_ai_backend(input_tokens: int, source_docs: int = 1) -> str:
                        "falling back to local Ollama")
     return "local"
 
-def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None) -> str:
+def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None) -> str:
     """One generation with validation and a single corrective retry. Local Ollama defaults to think:false."""
     selected_backend = backend or SUMMARY_BACKEND
     def call(messages):
@@ -1602,13 +1608,18 @@ def _complete(system: str, user: str, validator, expected: str, *, local_model: 
             text = r.json().get("message", {}).get("content", "") or ""
         else:
             from google import genai
+            from google.genai import types
             key = os.environ.get("GEMINI_API_KEY", "")
             if not key:
                 raise RuntimeError("GEMINI_API_KEY not set")
             client = genai.Client(api_key=key)
             joined = "\n\n".join(m["content"] for m in messages)
+            config = (types.GenerateContentConfig(
+                        max_output_tokens=max_output_tokens,
+                        temperature=0.2)
+                      if max_output_tokens else None)
             text = client.models.generate_content(
-                model=GEMINI_MODEL, contents=joined).text or ""
+                model=GEMINI_MODEL, contents=joined, config=config).text or ""
         return _extract_model_document(text, expected)
 
     messages = [{"role": "system", "content": system},
