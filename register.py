@@ -10,6 +10,7 @@ Summaries are folded from HANDOFF documents — the context summaries an AI
 writes at the end of a session — rather than raw 170KB transcripts. That
 is what makes local CPU summarisation viable: seconds, not 40 minutes.
 """
+import json
 import logging
 import os
 import re
@@ -571,24 +572,53 @@ def _material(p: dict, since: float) -> tuple[list[str], float]:
 
 
 def _canonical_handoff_files(p: dict) -> list[dict]:
-    """Return canonical handoffs from the newest explicit context baseline onward.
+    """Return canonical handoffs using an explicit baseline absorption manifest.
 
-    A baseline is a normal immutable handoff with `context_baseline: true`.
-    Older handoffs remain in the vault for audit/history, but the baseline
-    explicitly states that it has reconciled them and therefore becomes the
-    starting point for derived current context.
+    Manifest-aware baselines record the exact source handoff paths they absorbed.
+    Any handoff not in that manifest remains canonical evidence regardless of
+    filesystem mtime. This is safe for Syncthing/Obsidian, where preserved mtimes
+    do not reliably represent when Register received a file.
+
+    Baselines created before manifests existed retain the old mtime boundary as
+    a backwards-compatible fallback only.
     """
-    files = sorted(p["handoffs"], key=lambda f: f["mtime"])
-    baseline_index = None
-    for idx, f in enumerate(files):
+    files = list(p["handoffs"])
+    baselines = []
+    for f in files:
         parsed = _read(VAULT_PATH / f["path"])
         if parsed is None:
             continue
         meta, _ = parsed
         if bool(meta.get("context_baseline", False)):
-            baseline_index = idx
-    return files[baseline_index:] if baseline_index is not None else files
+            baselines.append((f, meta))
 
+    if not baselines:
+        return sorted(files, key=lambda f: f["mtime"])
+
+    manifest_baselines = [
+        (f, meta) for f, meta in baselines
+        if isinstance(meta.get("source_handoff_paths"), list)
+    ]
+    if manifest_baselines:
+        baseline, meta = max(
+            manifest_baselines, key=lambda item: item[0]["mtime"])
+        absorbed = {
+            str(path) for path in meta.get("source_handoff_paths", [])
+            if str(path).strip()
+        }
+        remaining = [
+            f for f in files
+            if f["path"] != baseline["path"] and f["path"] not in absorbed
+        ]
+        remaining.sort(key=lambda f: f["mtime"])
+        return [baseline] + remaining
+
+    ordered = sorted(files, key=lambda f: f["mtime"])
+    baseline_index = None
+    for idx, f in enumerate(ordered):
+        if any(f["path"] == baseline[0]["path"] for baseline in baselines):
+            baseline_index = idx
+    return ordered[baseline_index:] if baseline_index is not None else ordered
 
 def _all_material(p: dict) -> tuple[list[tuple[str, str]], float]:
     """Read canonical handoffs from the latest baseline onward.
@@ -795,6 +825,7 @@ def consolidate_handoffs(name: str) -> dict:
         return {"status": "error", "reason": "GEMINI_API_KEY required for handoff consolidation"}
 
     docs = []
+    source_handoff_paths = []
     for f in files:
         parsed = _read(VAULT_PATH / f["path"])
         if parsed is None:
@@ -802,6 +833,7 @@ def consolidate_handoffs(name: str) -> dict:
         text = parsed[1].strip()
         if text:
             docs.append((f["title"], f"### {f['title']} — handoff note\n\n{text}"))
+            source_handoff_paths.append(f["path"])
     if not docs:
         return {"status": "error", "reason": "handoff history is empty or unreadable"}
 
@@ -963,6 +995,7 @@ Begin exactly with `# Legacy handoff consolidation`.
         f"source_mode: legacy-handoff-consolidation\n"
         f"context_baseline: true\n"
         f"source_handoffs: {len(docs)}\n"
+        f"source_handoff_paths: {json.dumps(source_handoff_paths)}\n"
         f"generated_by: {GEMINI_MODEL}\n"
         f"evidence_batches: {len(batches)}\n"
         f"evidence_tokens: {evidence_tokens}\n"

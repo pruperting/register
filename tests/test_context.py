@@ -323,6 +323,44 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn('CURRENT later feature added.', joined)
         self.assertEqual(len(docs), 2)
 
+    def test_manifest_baseline_keeps_unabsorbed_handoff_even_with_older_mtime(self):
+        old = self._handoff(
+            'old.md', 'old',
+            '## Current state\n- CURRENT stale historical state.', 1000)
+        baseline = self._handoff(
+            'baseline.md', 'baseline',
+            '## Current state\n- CURRENT consolidated state.', 3000)
+        later = self._handoff(
+            'later.md', 'later',
+            '## Current state\n- CURRENT later state.', 2000)
+
+        old_rel = str(old.relative_to(register.VAULT_PATH))
+        text = baseline.read_text(encoding='utf-8')
+        text = text.replace(
+            'title: baseline\n',
+            'title: baseline\n'
+            'context_baseline: true\n'
+            f'source_handoff_paths: ["{old_rel}"]\n')
+        baseline.write_text(text, encoding='utf-8')
+        os.utime(baseline, (3000, 3000))
+        os.utime(later, (2000, 2000))
+        register.invalidate()
+
+        docs, _ = register._all_material(register.project('Demo'))
+        joined = '\n'.join(body for _, body in docs)
+
+        self.assertEqual(len(docs), 2)
+        self.assertIn('CURRENT consolidated state.', joined)
+        self.assertIn('CURRENT later state.', joined)
+        self.assertNotIn('CURRENT stale historical state.', joined)
+
+    def test_consolidation_records_exact_absorbed_handoff_paths(self):
+        source = Path(register.__file__).read_text(encoding='utf-8')
+        self.assertIn('source_handoff_paths = []', source)
+        self.assertIn('source_handoff_paths.append(f["path"])', source)
+        self.assertIn(
+            'source_handoff_paths: {json.dumps(source_handoff_paths)}', source)
+
     def test_dedupe_prefers_newest_repeated_next_item(self):
         docs = [
             ('one.md', '## Next steps\n- Deploy the refreshed Register container.'),
