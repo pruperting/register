@@ -476,11 +476,46 @@ none
         self.assertNotIn('AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12', written)
         self.assertIn('[REDACTED GOOGLE API KEY]', written)
 
-    def test_consolidation_caps_gemini_output(self):
+    def test_consolidation_budget_scales_with_evidence(self):
+        small = register._consolidation_budget(4000, 2)
+        medium = register._consolidation_budget(20000, 15)
+        large = register._consolidation_budget(100000, 48)
+
+        self.assertEqual(small, {
+            "target_tokens": 3000,
+            "ceiling_tokens": 5000,
+            "generation_tokens": 6000,
+        })
+        self.assertEqual(medium, {
+            "target_tokens": 7500,
+            "ceiling_tokens": 11250,
+            "generation_tokens": 12937,
+        })
+        self.assertEqual(large, {
+            "target_tokens": 12000,
+            "ceiling_tokens": 15000,
+            "generation_tokens": 17250,
+        })
+
+    def test_consolidation_budget_never_exceeds_15000_ceiling(self):
+        for evidence_tokens, docs in (
+            (1, 1), (10000, 10), (50000, 50), (500000, 500)
+        ):
+            budget = register._consolidation_budget(evidence_tokens, docs)
+            self.assertLessEqual(budget["ceiling_tokens"], 15000)
+            self.assertLessEqual(budget["target_tokens"], 12000)
+            self.assertLessEqual(budget["generation_tokens"], 18000)
+            self.assertGreaterEqual(
+                budget["ceiling_tokens"], budget["target_tokens"])
+
+    def test_consolidation_uses_dynamic_generation_budget(self):
         source = Path(register.__file__).read_text(encoding='utf-8')
         self.assertIn('max_output_tokens: int | None = None', source)
         self.assertIn('max_output_tokens=max_output_tokens', source)
-        self.assertIn('backend="gemini", max_output_tokens=4800', source)
+        self.assertIn(
+            'backend="gemini", max_output_tokens=generation_tokens', source)
+        self.assertNotIn(
+            'backend="gemini", max_output_tokens=4800', source)
 
 if __name__ == '__main__':
     unittest.main()

@@ -739,6 +739,33 @@ Begin exactly with `# Legacy reference bootstrap`.'''
             "ai_backend": backend, "ai_calls": 1}
 
 
+def _consolidation_budget(evidence_tokens: int, source_docs: int) -> dict:
+    """Scale baseline size to evidence volume and reconciliation breadth.
+
+    The baseline is reconciled source evidence, not the final AI-facing CTX.
+    The deterministic compiler remains responsible for compacting that baseline.
+    """
+    evidence_tokens = max(0, int(evidence_tokens or 0))
+    source_docs = max(1, int(source_docs or 1))
+
+    target = round(evidence_tokens * 0.30 + source_docs * 100)
+    target = max(3000, min(12000, target))
+
+    ceiling = round(evidence_tokens * 0.45 + source_docs * 150)
+    ceiling = max(5000, min(15000, ceiling))
+    ceiling = max(ceiling, target + 1000)
+    ceiling = min(15000, ceiling)
+
+    generation = round(ceiling * 1.15)
+    generation = max(6000, min(18000, generation))
+
+    return {
+        "target_tokens": target,
+        "ceiling_tokens": ceiling,
+        "generation_tokens": generation,
+    }
+
+
 def consolidate_handoffs(name: str) -> dict:
     """Create one explicit Gemini-generated baseline from existing handoffs.
 
@@ -793,6 +820,12 @@ def consolidate_handoffs(name: str) -> dict:
         logger.error("handoff consolidation redaction failed for %s: %s", name, e)
         return {"status": "error", "reason": f"redaction failed: {e}"}
 
+    evidence_tokens = _estimate_tokens(evidence)
+    budget = _consolidation_budget(evidence_tokens, len(docs))
+    target_tokens = budget["target_tokens"]
+    ceiling_tokens = budget["ceiling_tokens"]
+    generation_tokens = budget["generation_tokens"]
+
     headings = (
         "## Objective",
         "## Current state",
@@ -840,12 +873,13 @@ Rules:
 - Keep important rejected approaches/gotchas where they prevent repeated work.
 - Do not invent facts.
 - Prefer terse bullets; remove historical explanation when the current fact is enough.
-- Target 2500-3500 tokens; hard maximum 5000 estimated tokens.
-- Budget sections roughly: Objective 150; Current state 900; Corrections 550;
-  Decisions 350; Environment 350; Gotchas 350; Code 250; Dependencies 200;
-  Open issues 350; Next steps 350 tokens. Shorter is better when evidence permits.
-- You MUST finish all ten headings. If space is tight, shorten earlier sections;
-  never omit or truncate later headings.
+- This evidence set contains {evidence_tokens} estimated tokens across {len(docs)}
+  source handoffs.
+- Aim for about {target_tokens} estimated tokens. The hard maximum for this
+  consolidation is {ceiling_tokens} estimated tokens.
+- Do not pad sparse sections merely to consume the budget.
+- You MUST finish all ten headings. If space is tight, compress repetition and
+  historical narration first; never omit or truncate later headings.
 
 Use EXACTLY these headings, once each, in this order:
 {chr(10).join(headings)}
@@ -879,9 +913,9 @@ Begin exactly with `# Legacy handoff consolidation`.
             validation["reason"] = "required headings were not in the required order"
             return False
 
-        if validation["tokens"] > 5000:
+        if validation["tokens"] > ceiling_tokens:
             validation["reason"] = (
-                f"output too large: ~{validation['tokens']} tokens; maximum is 5000"
+                f"output too large: ~{validation['tokens']} tokens; maximum is {ceiling_tokens}"
             )
             return False
 
@@ -893,13 +927,13 @@ Begin exactly with `# Legacy handoff consolidation`.
         "headings in order: Objective; Current state; Corrections to previous "
         "records; Decisions and constraints; Environment and deployment; "
         "Workarounds and gotchas; Code; Dependencies and interactions; "
-        "Open issues; Next steps, with the complete document under 5000 "
+        f"Open issues; Next steps, with the complete document under {ceiling_tokens} "
         "estimated tokens"
     )
     try:
         canonical = _complete(
             _CONTEXT_SYSTEM, prompt, valid, expected,
-            backend="gemini", max_output_tokens=4800)
+            backend="gemini", max_output_tokens=generation_tokens)
     except Exception as e:
         logger.error(
             "handoff consolidation synthesis failed for %s: %s; validation=%s; "
@@ -931,7 +965,10 @@ Begin exactly with `# Legacy handoff consolidation`.
         f"source_handoffs: {len(docs)}\n"
         f"generated_by: {GEMINI_MODEL}\n"
         f"evidence_batches: {len(batches)}\n"
-        f"evidence_tokens: {_estimate_tokens(evidence)}\n"
+        f"evidence_tokens: {evidence_tokens}\n"
+        f"target_tokens: {target_tokens}\n"
+        f"ceiling_tokens: {ceiling_tokens}\n"
+        f"generation_tokens: {generation_tokens}\n"
         f"input_redactions: {sum(input_redactions.values())}\n"
         f"output_redactions: {sum(output_redactions.values())}\n"
         f"estimated_tokens: {_estimate_tokens(canonical)}\n---\n\n"
@@ -949,7 +986,10 @@ Begin exactly with `# Legacy handoff consolidation`.
         "source_mode": "legacy-handoff-consolidation",
         "source_handoffs": len(docs),
         "evidence_batches": len(batches),
-        "evidence_tokens": _estimate_tokens(evidence),
+        "evidence_tokens": evidence_tokens,
+        "target_tokens": target_tokens,
+        "ceiling_tokens": ceiling_tokens,
+        "generation_tokens": generation_tokens,
         "estimated_tokens": _estimate_tokens(canonical),
         "input_redactions": input_redactions,
         "output_redactions": output_redactions,
