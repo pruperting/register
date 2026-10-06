@@ -429,5 +429,14 @@ none
         self.assertTrue(info['has_context'])
         self.assertIn('CURRENT replacement is live.', info['context'])
 
+
+    def test_consolidation_validator_diagnostics_present(self):
+        source = Path(register.__file__).read_text(encoding='utf-8')
+        self.assertIn('"validation_reason": validation["reason"]', source)
+        self.assertIn('"output_tokens": validation["tokens"]', source)
+        self.assertIn('"output_preview": validation["preview"]', source)
+        self.assertIn('re.finditer(pattern, text)', source)
+
+
 if __name__ == '__main__':
     unittest.main()

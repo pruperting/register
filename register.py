@@ -836,26 +836,66 @@ Use EXACTLY these headings, once each, in this order:
 Begin exactly with `# Legacy handoff consolidation`.
 """
 
+    validation = {"reason": "not validated", "tokens": 0, "preview": ""}
+
     def valid(text: str) -> bool:
         text = (text or "").strip()
-        if not text.startswith("# Legacy handoff consolidation"):
-            return False
-        if any(text.count(h) != 1 for h in headings):
-            return False
-        positions = [text.find(h) for h in headings]
-        if positions != sorted(positions):
-            return False
-        return _estimate_tokens(text) <= 5000
+        validation["tokens"] = _estimate_tokens(text)
+        validation["preview"] = text[:1200]
 
+        if not re.search(r"(?m)^# Legacy handoff consolidation\s*$", text):
+            validation["reason"] = "missing exact top-level title"
+            return False
+
+        positions = []
+        for heading in headings:
+            pattern = rf"(?m)^{re.escape(heading)}\s*$"
+            matches = list(re.finditer(pattern, text))
+            if len(matches) != 1:
+                validation["reason"] = (
+                    f"heading {heading!r} occurred {len(matches)} times; expected exactly 1"
+                )
+                return False
+            positions.append(matches[0].start())
+
+        if positions != sorted(positions):
+            validation["reason"] = "required headings were not in the required order"
+            return False
+
+        if validation["tokens"] > 5000:
+            validation["reason"] = (
+                f"output too large: ~{validation['tokens']} tokens; maximum is 5000"
+            )
+            return False
+
+        validation["reason"] = "ok"
+        return True
+
+    expected = (
+        "'# Legacy handoff consolidation' followed by exactly these level-2 "
+        "headings in order: Objective; Current state; Corrections to previous "
+        "records; Decisions and constraints; Environment and deployment; "
+        "Workarounds and gotchas; Code; Dependencies and interactions; "
+        "Open issues; Next steps"
+    )
     try:
         canonical = _complete(
-            _CONTEXT_SYSTEM, prompt, valid,
-            "'# Legacy handoff consolidation' with all required sections",
+            _CONTEXT_SYSTEM, prompt, valid, expected,
             backend="gemini")
     except Exception as e:
-        logger.error("handoff consolidation synthesis failed for %s: %s", name, e)
-        return {"status": "error", "reason": str(e),
-                "source_mode": "legacy-handoff-consolidation"}
+        logger.error(
+            "handoff consolidation synthesis failed for %s: %s; validation=%s; "
+            "tokens~%s; rejected-preview=%r",
+            name, e, validation["reason"], validation["tokens"],
+            validation["preview"])
+        return {
+            "status": "error",
+            "reason": str(e),
+            "validation_reason": validation["reason"],
+            "output_tokens": validation["tokens"],
+            "output_preview": validation["preview"],
+            "source_mode": "legacy-handoff-consolidation",
+        }
 
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d")
