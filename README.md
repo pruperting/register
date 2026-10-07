@@ -158,6 +158,13 @@ baselines are explicitly marked as needing a complete checkpoint; their old
 views remain visible for migration. A prior `context_baseline: true` does not
 prevent the one-time complete-checkpoint bootstrap.
 
+If Gemini bootstrap output fails validation, the UI and logs report the specific
+failed rule and Gemini's finish reason. A redacted copy of the rejected output,
+token counts and budget is saved as `checkpoint-bootstrap-rejected-*.json` in
+the project directory. These diagnostic files are never imported as handoffs;
+the published checkpoint remains unchanged. Bootstrap does not automatically
+retry or make another AI call after rejection.
+
 Test before deployment, from the repository directory:
 
 ```bash

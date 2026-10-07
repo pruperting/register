@@ -35,6 +35,7 @@ async function pollJob(key, btn, orig, onDone) {
 }
 function runJob(btn, url, key, body) {
   const orig = btn.textContent;
+  btn.parentElement.querySelector('.job-error')?.remove();
   btn.disabled = true; btn.textContent = 'starting…';
   const done = (t, reload) => {
     btn.textContent = t;
@@ -49,6 +50,14 @@ function runJob(btn, url, key, body) {
         if (res.status === 'generated' || res.status === 'ok') return done('done ✓', true);
         if (res.status === 'fresh') return done('already current', false);
         if (res.status === 'bootstrap-required') return done('bootstrap needed', true);
+        let error = btn.parentElement.querySelector('.job-error');
+        if (!error) {
+          error = document.createElement('p');
+          error.className = 'job-error notice';
+          error.setAttribute('role', 'alert');
+          btn.parentElement.appendChild(error);
+        }
+        error.textContent = res.reason || 'unknown error';
         done(`error: ${(res.reason || 'unknown').slice(0, 40)}`, false);
       });
     })

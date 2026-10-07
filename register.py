@@ -1140,7 +1140,7 @@ def _select_ai_backend(input_tokens: int, source_docs: int = 1) -> str:
                        "falling back to local Ollama")
     return "local"
 
-def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None) -> str:
+def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None, response_details: dict | None = None) -> str:
     """One generation with validation and a single corrective retry. Local Ollama defaults to think:false."""
     selected_backend = backend or SUMMARY_BACKEND
     def call(messages):
@@ -1167,8 +1167,18 @@ def _complete(system: str, user: str, validator, expected: str, *, local_model: 
                         max_output_tokens=max_output_tokens,
                         temperature=0.2)
                       if max_output_tokens else None)
-            text = client.models.generate_content(
-                model=GEMINI_MODEL, contents=joined, config=config).text or ""
+            response = client.models.generate_content(
+                model=GEMINI_MODEL, contents=joined, config=config)
+            text = response.text or ""
+            if response_details is not None:
+                candidates = response.candidates or []
+                finish = candidates[0].finish_reason if candidates else None
+                response_details['finish_reason'] = str(getattr(finish, 'value', finish) or 'unknown')
+                usage = response.usage_metadata
+                for field in ('prompt_token_count', 'candidates_token_count', 'thoughts_token_count'):
+                    response_details[field] = getattr(usage, field, None)
+        if response_details is not None:
+            response_details['raw_output'] = text
         return _extract_model_document(text, expected)
 
     messages = [{"role": "system", "content": system},

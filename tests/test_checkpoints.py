@@ -1,5 +1,6 @@
 """Integration contracts for conversation-authored snapshots and explicit AI use."""
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ import checkpoints as cp
 import app
 import synthesise
 import herald_status
+
+cp_test_complete = reg._complete
 
 
 @pytest.fixture
@@ -183,6 +186,47 @@ def test_bootstrap_missing_key_and_bad_output_create_no_checkpoint(project,monke
     monkeypatch.setenv('GEMINI_API_KEY','test')
     monkeypatch.setattr(reg,'_complete',lambda *a,**k:'## Human summary\nBroken')
     assert reg.consolidate_handoffs('Demo')['status']=='error'
+    assert len(list((project/'handoffs').glob('*.md')))==1
+
+
+def test_rejected_gemini_output_has_precise_redacted_diagnostics(project,monkeypatch):
+    from types import SimpleNamespace
+    from google import genai
+    legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
+    secret = 'AIza' + 'S'*32
+    raw = '## Human summary\nCurrent app\n## AI checkpoint\nCTX/2\nGOAL\n' + secret
+    response = SimpleNamespace(text=raw,
+        candidates=[SimpleNamespace(finish_reason=SimpleNamespace(value='MAX_TOKENS'))],
+        usage_metadata=SimpleNamespace(prompt_token_count=1200,candidates_token_count=500,thoughts_token_count=300))
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs); return response
+    monkeypatch.setattr(genai,'Client',lambda **kw: SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
+    monkeypatch.setattr(reg,'_complete',cp_test_complete)
+    result = reg.consolidate_handoffs('Demo')
+    assert result['status']=='error' and len(calls)==1
+    assert 'every section once, in order' in result['reason']
+    assert 'MAX_TOKENS' in result['reason']
+    diagnostic = json.loads((reg.VAULT_PATH/result['diagnostic_path']).read_text())
+    assert secret not in json.dumps(diagnostic)
+    assert '[REDACTED GOOGLE API KEY]' in diagnostic['raw_output']
+    assert diagnostic['candidates_token_count']==500
+    assert diagnostic['thoughts_token_count']==300
+    assert diagnostic['estimated_tokens']==reg._estimate_tokens(raw)
+    assert len(list((project/'handoffs').glob('*.md')))==1
+    assert reg.refresh_project('Demo')['status']=='bootstrap-required'
+
+
+def test_bootstrap_budget_rejection_is_distinct_from_format_failure(project,monkeypatch):
+    legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(reg,'_consolidation_budget',lambda *a:dict(target_tokens=5,ceiling_tokens=10,generation_tokens=100))
+    def complete(system,prompt,validator,expected,**kwargs):
+        assert not validator(body())
+        raise RuntimeError('generic failure')
+    monkeypatch.setattr(reg,'_complete',complete)
+    result = reg.consolidate_handoffs('Demo')
+    assert 'output exceeds bootstrap ceiling' in result['reason']
+    assert 'generic failure' not in result['reason']
     assert len(list((project/'handoffs').glob('*.md')))==1
 
 
