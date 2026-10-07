@@ -256,6 +256,20 @@ def pending(p):
         return True
 
 
+def _bootstrap_budget(evidence_tokens, source_docs):
+    """Keep a compact target, with enough headroom for a complete snapshot.
+
+    Legacy consolidation's fraction-of-source ceiling assumes a slim baseline.
+    A full checkpoint must also retain commands, correction audits and tasks.
+    Generation uses API tokens, whereas the artifact ceiling uses len/4 estimates.
+    """
+    budget = dict(_reg()._consolidation_budget(evidence_tokens, source_docs))
+    budget['ceiling_tokens'] = min(MAX_TOKENS, max(
+        budget['ceiling_tokens'], round(evidence_tokens * 1.25)))
+    budget['generation_tokens'] = max(6000, round(budget['ceiling_tokens'] * 1.5))
+    return budget
+
+
 def bootstrap(name, references=False):
     """One explicit Gemini request creates a complete snapshot; never Ollama."""
     reg = _reg(); reg.invalidate(); p = reg.project(name)
@@ -286,7 +300,7 @@ def bootstrap(name, references=False):
     evidence, batches = reg._batch_project_material(name, docs)
     from synthesise import _redact_for_external_ai
     evidence, redactions = _redact_for_external_ai(evidence)
-    budget = reg._consolidation_budget(reg._estimate_tokens(evidence), len(docs))
+    budget = _bootstrap_budget(reg._estimate_tokens(evidence), len(docs))
     # Gemini's generation limit includes hidden reasoning, not only the saved
     # document. Bound Gemini 2.5 reasoning and reserve it in addition to the
     # document allowance. Keep the independent 15000-token artifact ceiling.
@@ -301,13 +315,16 @@ Preserve outstanding tasks, completed work, rejected/superseded approaches, deci
 constraints, exact commands, paths, versions, deployment and gotchas. CURRENT is implemented
 reality; DONE is verified completed work; OPEN is unresolved; NEXT is future work.
 Retain structured CORRECTION | PREVIOUS | CURRENT | AFFECTS | EVIDENCE audit records.
+Keep each correction audit concise and factual; do not invent evidence or repeat it
+in other sections. State each fact once in its appropriate section. Consolidate
+duplicate facts while preserving distinct tasks, corrections and technical literals.
 Never reproduce secret values. Environment variable names may be preserved.
 Use terse complete facts, not a transcript. Target a compact checkpoint while preserving
 continuation-critical facts; target about {budget["target_tokens"]} estimated tokens,
 hard maximum {budget["ceiling_tokens"]} (absolute ceiling 15000). Do not invent facts.
 Output exactly this body, without outer fences or YAML:
 ## Human summary
-Brief Markdown overview, where it stands and next actions, written for the owner.
+Brief Markdown overview, where it stands and next actions, at most 150 words.
 ## AI checkpoint
 CTX/2
 {chr(10).join(s + chr(10) + '-' for s in SECTIONS)}

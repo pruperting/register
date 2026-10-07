@@ -219,7 +219,7 @@ def test_rejected_gemini_output_has_precise_redacted_diagnostics(project,monkeyp
 
 def test_bootstrap_budget_rejection_is_distinct_from_format_failure(project,monkeypatch):
     legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
-    monkeypatch.setattr(reg,'_consolidation_budget',lambda *a:dict(target_tokens=5,ceiling_tokens=10,generation_tokens=100))
+    monkeypatch.setattr(cp,'_bootstrap_budget',lambda *a:dict(target_tokens=5,ceiling_tokens=10,generation_tokens=100))
     def complete(system,prompt,validator,expected,**kwargs):
         assert not validator(body())
         raise RuntimeError('generic failure')
@@ -230,6 +230,40 @@ def test_bootstrap_budget_rejection_is_distinct_from_format_failure(project,monk
     assert len(list((project/'handoffs').glob('*.md')))==1
 
 
+@pytest.mark.parametrize('evidence,ceiling,generation',[(1000,5000,7500),(12253,15000,22500),(100000,15000,22500)])
+def test_complete_checkpoint_budget_scales_without_exceeding_artifact_cap(evidence,ceiling,generation):
+    budget=cp._bootstrap_budget(evidence,2)
+    assert budget['ceiling_tokens']==ceiling
+    assert budget['generation_tokens']==generation
+    assert budget['target_tokens']==reg._consolidation_budget(evidence,2)['target_tokens']
+
+
+@pytest.mark.parametrize('state_size,accepted',[(31000,True),(61000,False)])
+def test_large_bootstrap_accepts_complete_output_but_keeps_15000_cap(project,monkeypatch,state_size,accepted):
+    legacy(project);monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(reg,'GEMINI_MODEL','gemini-2.5-flash')
+    monkeypatch.setattr(reg,'_batch_project_material',lambda *a:('x'*49012,['batch']))
+    calls=[]
+    def complete(system,prompt,validator,expected,**kwargs):
+        calls.append(kwargs)
+        assert kwargs['max_output_tokens']==24548
+        assert 'hard maximum 15000' in prompt
+        value=body(state='x'*state_size)
+        assert validator(value)==accepted
+        if not accepted:raise RuntimeError('invalid output')
+        return value
+    monkeypatch.setattr(reg,'_complete',complete)
+    result=reg.consolidate_handoffs('Demo')
+    assert len(calls)==1
+    if accepted:
+        assert result['status']=='generated'
+        assert reg.context_info('Demo')['context'].count('x')>=state_size
+        assert reg.refresh_project('Demo')['status']=='fresh'
+    else:
+        assert result['status']=='error' and '15000' in result['reason']
+        assert len(list((project/'handoffs').glob('*.md')))==1
+
+
 @pytest.mark.parametrize('model,reasoning', [('gemini-2.5-flash',2048), ('models/gemini-2.5-pro',2048), ('gemini-2.0-flash',None)])
 @pytest.mark.parametrize('finish', ['STOP','MAX_TOKENS'])
 def test_bootstrap_reserves_reasoning_and_rejects_even_structured_truncation(project,monkeypatch,model,reasoning,finish):
@@ -238,7 +272,7 @@ def test_bootstrap_reserves_reasoning_and_rejects_even_structured_truncation(pro
     from google.genai import types
     legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
     monkeypatch.setattr(reg,'GEMINI_MODEL',model)
-    monkeypatch.setattr(reg,'_consolidation_budget',lambda *a:dict(target_tokens=3000,ceiling_tokens=5000,generation_tokens=6000))
+    monkeypatch.setattr(cp,'_bootstrap_budget',lambda *a:dict(target_tokens=3000,ceiling_tokens=5000,generation_tokens=6000))
     calls=[]
     response=types.GenerateContentResponse(
         candidates=[types.Candidate(finish_reason=finish,

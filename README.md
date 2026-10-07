@@ -165,8 +165,12 @@ the project directory. These diagnostic files are never imported as handoffs;
 the published checkpoint remains unchanged. Bootstrap does not automatically
 retry or make another AI call after rejection.
 For Gemini 2.5 bootstrap, reasoning has a 2048-token budget reserved in addition
-to the document generation allowance. The accepted document still has its
-dynamic size ceiling and absolute 15000 estimated-token limit. A response with
+to the document generation allowance. The compact target remains dynamic;
+the document ceiling allows up to 125% of the compressed evidence size (minimum
+5000, maximum 15000 estimated tokens) so complete snapshots can retain protected
+correction audits and tasks. Generation reserves 1.5 times that ceiling in API
+tokens, plus reasoning, because API token counts differ from character estimates.
+The accepted document still has its absolute 15000 estimated-token limit. A response with
 `MAX_TOKENS` is always rejected, even if all section headings are present.
 
 Test before deployment, from the repository directory:
