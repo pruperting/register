@@ -1,0 +1,388 @@
+"""Integration contracts for conversation-authored snapshots and explicit AI use."""
+import io
+import os
+import sys
+from pathlib import Path
+import subprocess
+from datetime import datetime, timezone
+
+import frontmatter
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import register as reg
+import checkpoints as cp
+import app
+import synthesise
+import herald_status
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    monkeypatch.setattr(reg, 'VAULT_PATH', tmp_path)
+    root = tmp_path/'projects'/'Demo'; (root/'handoffs').mkdir(parents=True)
+    (root/'_project.md').write_text('---\ndescription: demo\nstatus: building\n---\n')
+    reg.invalidate()
+    monkeypatch.setattr(reg, '_complete', lambda *a, **k: pytest.fail('unexpected AI generation'))
+    yield root
+    reg.invalidate()
+
+
+def body(state='CURRENT app.py works.', opens='- TODO T-2: investigate cache.', nexts='- TODO T-3: deploy.', done='- DONE T-1: fix parser.'):
+    values = {'GOAL': '- Keep Demo useful.', 'STACK': '- Docker, port 5557.',
+              'ARCH': '- Flask and synced vault.', 'FILES': '- app.py and music_library.db.',
+              'STATE': '- '+state, 'DONE': done,
+              'CORRECTIONS': '- CORRECTION | PREVIOUS: port 5000 | CURRENT: port 5557 | AFFECTS: deployment | EVIDENCE: runtime',
+              'DEC': '- Use immutable checkpoints.', 'INV': '- Never infer completion from silence.',
+              'BUG': '- Preserve the exact error ModuleNotFoundError.', 'OPEN': opens,
+              'NEXT': nexts, 'REJECTED': '- REJECTED old queue.', 'FACTS': '- host /srv/demo.'}
+    return '## Human summary\nDemo is running; deploy next.\n\n## AI checkpoint\nCTX/2\n' + '\n'.join(s+'\n'+values.get(s,'-') for s in cp.SECTIONS)
+
+
+def snapshot(root, filename='one.md', parent=None, content=None, mtime=1, **extra):
+    reg.invalidate()
+    if parent is None:
+        parent = cp.identity('Demo')
+    meta = {'type': 'handoff', 'project': 'Demo', 'title': filename,
+            'checkpoint_version': 1, 'based_on': parent,
+            'created_at': '2026-10-07T12:00:00Z', **extra}
+    content = content or body()
+    path = root/'handoffs'/filename
+    path.write_text(frontmatter.dumps(frontmatter.Post(content, **meta)))
+    os.utime(path,(mtime,mtime)); reg.invalidate()
+    return cp.parse(meta, content, 'Demo')['id']
+
+
+def legacy(root):
+    path=root/'handoffs'/'legacy.md'
+    path.write_text('---\ntype: handoff\nproject: Demo\n---\n## Current state\n- CURRENT stale fact.\n## Open issues\n- Old task.\n')
+    reg.invalidate()
+    return path
+
+
+def test_import_exact_complete_pair_and_no_ai(project):
+    source=body(); key=snapshot(project, content=source)
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert cp.identity('Demo') == key
+    assert reg.context_info('Demo')['context'] == source.split('## AI checkpoint\n')[1].strip()
+    assert reg.summary_info('Demo')['summary']=='Demo is running; deploy next.'
+    for _ in range(3):
+        assert reg.refresh_project('Demo')['status']=='fresh'
+        assert reg.generate_summary('Demo',full=True)['status']=='fresh'
+        assert reg.generate_context('Demo',full=True)['status']=='fresh'
+    assert not (project/'Demo_RUNBOOK.md').exists()
+
+
+def test_chain_replaces_all_sections_even_empty_with_preserved_mtimes(project):
+    key=snapshot(project,mtime=9000); reg.refresh_project('Demo')
+    snapshot(project,'two.md',parent=key,content=body(state='CURRENT new value.',opens='-',nexts='-',done='- DONE T-2: investigation.'),mtime=1)
+    assert reg.refresh_project('Demo')['status']=='generated'
+    context=reg.context_info('Demo')['context']
+    assert 'new value' in context and 'app.py works' not in context
+    assert cp.split_context(context)['OPEN']=='-'
+    assert cp.split_context(context)['NEXT']=='-'
+    assert 'DONE T-2' in context and 'DONE T-1' not in context
+
+
+def test_chain_order_does_not_depend_on_timestamps(project):
+    first=snapshot(project,'one.md',mtime=9000)
+    second=snapshot(project,'two.md',parent=first,content=body(state='CURRENT second.'),mtime=1,created_at='2020-01-01T00:00:00Z')
+    assert cp.identity('Demo')==second
+    assert reg.refresh_project('Demo')['status']=='generated'
+
+
+def test_duplicate_synced_copy_is_idempotent(project):
+    snapshot(project); reg.refresh_project('Demo')
+    (project/'handoffs'/'duplicate.md').write_bytes((project/'handoffs'/'one.md').read_bytes())
+    reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='fresh'
+
+
+@pytest.mark.parametrize('broken', ['missing', 'duplicate', 'reordered', 'blank', 'wrong-version', 'missing-parent', 'bad-time', 'unclosed-fence', 'oversize'])
+def test_invalid_snapshot_retains_both_published_views(project,broken):
+    key=snapshot(project); reg.refresh_project('Demo')
+    context=(project/'Demo_CONTEXT.md').read_bytes(); summary=(project/'Demo_summary.md').read_bytes()
+    meta={'type':'handoff','project':'Demo','checkpoint_version':1,'based_on':key,'created_at':'2026-10-08T00:00:00Z'}
+    value=body(state='CURRENT new value.')
+    if broken=='missing': value=value.replace('DONE\n- DONE T-1: fix parser.\n','')
+    if broken=='duplicate': value += '\nDONE\n- duplicate'
+    if broken=='reordered': value=value.replace('GOAL\n','TEMP\n').replace('STACK\n','GOAL\n').replace('TEMP\n','STACK\n')
+    if broken=='blank': value=value.replace('OPEN\n- TODO T-2: investigate cache.','OPEN\n')
+    if broken=='wrong-version': meta['checkpoint_version']=2
+    if broken=='missing-parent': meta.pop('based_on')
+    if broken=='wrong-project': meta['project']='demo'
+    if broken=='bad-time': meta['created_at']='2026-10-08'
+    if broken=='unclosed-fence': value += '\n```bash\nunfinished'
+    if broken=='oversize': value+='x'*61000
+    (project/'handoffs'/'broken.md').write_text(frontmatter.dumps(frontmatter.Post(value,**meta)))
+    reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='error'
+    assert (project/'Demo_CONTEXT.md').read_bytes()==context
+    assert (project/'Demo_summary.md').read_bytes()==summary
+
+
+def test_conflicting_siblings_and_missing_ancestor_never_win_by_mtime(project):
+    root=snapshot(project); reg.refresh_project('Demo')
+    snapshot(project,'a.md',parent=root,content=body(state='CURRENT branch A.'),mtime=9000)
+    snapshot(project,'b.md',parent=root,content=body(state='CURRENT branch B.'),mtime=1)
+    assert 'conflicting' in reg.refresh_project('Demo')['reason']
+    (project/'handoffs'/'b.md').unlink(); reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='generated'
+    (project/'handoffs'/'one.md').unlink(); reg.invalidate()
+    assert 'ancestry' in reg.refresh_project('Demo')['reason']
+
+
+def test_existing_legacy_baseline_migrates_without_unioning_old_tasks(project):
+    old=legacy(project)
+    parent=cp.identity('Demo'); assert parent.startswith('legacy:')
+    snapshot(project,parent=parent,content=body(opens='-',nexts='-'))
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert 'Old task' not in reg.context_info('Demo')['context']
+    # Never silently ignore a later incremental handoff after the full snapshot.
+    legacy_path=project/'handoffs'/'late.md'
+    legacy_path.write_text('---\ntype: handoff\nproject: Demo\n---\n## Current state\n- Extra change')
+    reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='error'
+    assert old.exists()
+
+
+def test_bootstrap_required_never_calls_ai(project):
+    legacy(project)
+    assert reg.refresh_project('Demo')['status']=='bootstrap-required'
+    assert reg.generate_summary('Demo')['status']=='bootstrap-required'
+    assert reg.generate_runbook('Demo')['ai_calls']==0
+    assert reg.generate_context('Demo')['migration_required']
+
+
+def test_explicit_gemini_bootstrap_redacts_and_only_runs_once(project,monkeypatch):
+    legacy(project)
+    old=project/'handoffs'/'legacy.md'
+    old.write_text(old.read_text()+'\nAPI key AIza'+'S'*32+'\n')
+    reg.invalidate(); monkeypatch.setenv('GEMINI_API_KEY','test-key')
+    calls=[]
+    def complete(system,prompt,validator,expected,**kwargs):
+        calls.append((prompt,kwargs))
+        assert 'AIza'+'S'*32 not in prompt
+        value=body().replace('host /srv/demo.', 'host /srv/demo. AIza'+'Z'*32)
+        assert validator(value)
+        return value
+    monkeypatch.setattr(reg,'_complete',complete)
+    result=reg.consolidate_handoffs('Demo')
+    assert result['status']=='generated' and result['ai_calls']==1
+    assert calls[0][1]['backend']=='gemini'
+    assert calls[0][1]['retry'] is False
+    assert '[REDACTED GOOGLE API KEY]' in reg.context_info('Demo')['context']
+    assert reg.consolidate_handoffs('Demo')['status']=='fresh'
+    assert len(calls)==1
+    assert 'AIza'+'S'*32 in old.read_text()  # evidence immutable
+
+
+def test_bootstrap_missing_key_and_bad_output_create_no_checkpoint(project,monkeypatch):
+    legacy(project); monkeypatch.delenv('GEMINI_API_KEY',raising=False)
+    assert 'GEMINI_API_KEY' in reg.consolidate_handoffs('Demo')['reason']
+    monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(reg,'_complete',lambda *a,**k:'## Human summary\nBroken')
+    assert reg.consolidate_handoffs('Demo')['status']=='error'
+    assert len(list((project/'handoffs').glob('*.md')))==1
+
+
+def test_concurrent_source_change_during_bootstrap_is_rejected(project,monkeypatch):
+    old=legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
+    def complete(*a,**k):
+        old.write_text(old.read_text()+'\nNEW fact'); return body()
+    monkeypatch.setattr(reg,'_complete',complete)
+    assert 'changed during bootstrap' in reg.consolidate_handoffs('Demo')['reason']
+    assert len(list((project/'handoffs').glob('*.md')))==1
+
+
+def test_explicit_reference_bootstrap_requires_no_handoffs(project,monkeypatch):
+    ref=project/'notes.md';ref.write_text('---\nproject: Demo\n---\nCurrent app.py configuration')
+    reg.invalidate(); monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(reg,'_complete',lambda *a,**k:body())
+    assert reg.bootstrap_handoff('Demo')['status']=='generated'
+    assert ref.exists()
+    assert reg.refresh_project('Demo')['status']=='fresh'
+
+
+def test_legacy_bootstrap_compression_preserves_old_tasks_and_literals(project):
+    docs=[('old','## Open issues\n- Outstanding original task\n## Code\n```bash\ndocker compose up -d\n```'),
+          ('new','## Open issues\n- New blocker')]
+    text,_=reg._batch_project_material('Demo',docs)
+    assert 'Outstanding original task' in text and 'New blocker' in text
+    assert 'docker compose up -d' in text
+
+
+def test_compact_export_preserves_all_tracking_and_code_and_source(project):
+    value=body().replace('- host /srv/demo.', '```bash\nprintf "OPEN\\n"\n```\n- host /srv/demo.')
+    snapshot(project,content=value); reg.refresh_project('Demo')
+    source=(project/'handoffs'/'one.md').read_bytes()
+    before=reg.context_info('Demo')['context']
+    compact=cp.export_context('Demo',compact=True)
+    assert compact.startswith('CHECKPOINT_ID ')
+    sections=cp.split_context(compact.split('\n',1)[1])
+    for section in cp.SECTIONS:
+        for line in cp.split_context(before)[section].splitlines():
+            assert line in sections[section]
+    assert (project/'handoffs'/'one.md').read_bytes()==source
+    assert reg.context_info('Demo')['context']==before
+
+
+def test_checkpoint_parser_does_not_treat_code_lines_as_headings(project):
+    value=body().replace('- host /srv/demo.', '```text\nSTATE\nDONE\nOPEN\n```')
+    snapshot(project,content=value)
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert cp.split_context(reg.context_info('Demo')['context'])['FACTS'].startswith('```')
+
+
+def test_upload_compressor_retains_ctx_tracking_sections(project):
+    result=reg.compress_documents([('ctx.md',body().split('## AI checkpoint\n')[1])],target_tokens=12000)
+    assert result['ai_calls']==0 and result['protected_missing']==0
+    assert '- DONE T-1' in result['context']
+    assert '- TODO T-2' in result['context'] and '- TODO T-3' in result['context']
+    assert 'CORRECTION | PREVIOUS' in result['context']
+
+
+def test_ui_import_download_prompt_and_retired_runbook(project):
+    key=snapshot(project)
+    client=app.app.test_client()
+    response=client.get('/p/Demo')
+    assert response.status_code==200
+    page=response.get_data(as_text=True)
+    assert 'Demo is running; deploy next.' in page
+    assert 'download compact chat copy' in page and 'rb-btn' not in page
+    prompt=client.get('/prompt?project=Demo').get_data(as_text=True)
+    assert 'based_on: '+key in prompt
+    assert 'checkpoint_version: 1' in prompt
+    assert 'FILES\n- app.py' in prompt and 'DONE\n- DONE T-1' in prompt
+    response=client.get('/api/context/Demo?download=1&compact=1')
+    assert response.status_code==200 and 'attachment;' in response.headers['Content-Disposition']
+    assert response.get_data(as_text=True).startswith('CHECKPOINT_ID '+key)
+    assert client.post('/api/runbook/Demo').status_code==410
+    assert client.post('/api/refresh').json['checkpoints']['Demo']['status']=='fresh'
+
+
+def test_pending_herald_and_weekly_review_use_accepted_snapshot_only(project):
+    legacy(project); snapshot(project)
+    assert herald_status._project_payload(reg.project('Demo'))['derived_state_pending']
+    reg.refresh_project('Demo')
+    assert not herald_status._project_payload(reg.project('Demo'))['derived_state_pending']
+    estate=project.parent/'_estate';estate.mkdir()
+    text,included=synthesise.collect(reg.VAULT_PATH)
+    assert included==['Demo'] and 'DONE T-1' in text
+    assert 'stale fact' not in text and 'Old task' not in text
+    assert 'NEW-HANDOFF DELTA' not in text
+
+
+def test_scheduled_refresh_no_ai_and_weekly_sunday_trigger(project):
+    snapshot(project)
+    app.scheduled_refresh()
+    assert reg.context_info('Demo')['has_context']
+    script='import app; print(app._sched.get_job("weekly_synthesis").trigger); app._sched.shutdown(wait=False)'
+    env={**os.environ,'AUTO_SUMMARY':'false','HERALD_STATUS_EXPORT':'false','WEEKLY_SYNTHESIS':'true',
+         'WEEKLY_SYNTHESIS_DAY':'sun','WEEKLY_SYNTHESIS_HOUR':'4'}
+    result=subprocess.run([sys.executable,'-c',script],cwd=Path(reg.__file__).parent,env=env,capture_output=True,text=True,check=True)
+    assert "day_of_week='sun'" in result.stdout and "hour='4'" in result.stdout
+    assert 'day=\'1\'' not in result.stdout
+
+
+def test_write_failure_is_reported_and_next_import_repairs_pair(project,monkeypatch):
+    snapshot(project)
+    original=reg._atomic_write
+    def write(path,text):
+        if path.name.endswith('_summary.md'): raise OSError('simulated disk failure')
+        original(path,text)
+    monkeypatch.setattr(reg,'_atomic_write',write)
+    assert reg.refresh_project('Demo')['status']=='error'
+    assert not reg.summary_info('Demo')['has_summary']
+    monkeypatch.setattr(reg,'_atomic_write',original)
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert reg.refresh_project('Demo')['status']=='fresh'
+
+
+def test_wrong_project_is_unfiled_and_cannot_change_current_snapshot(project):
+    snapshot(project); reg.refresh_project('Demo')
+    meta={'type':'handoff','project':'demo','checkpoint_version':1,'based_on':cp.identity('Demo'),'created_at':'2026-10-08T00:00:00Z'}
+    (project/'handoffs'/'wrong.md').write_text(frontmatter.dumps(frontmatter.Post(body(),**meta)))
+    reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='fresh'
+    assert any(g['claimed']=='demo' for g in reg.unfiled_groups())
+    with pytest.raises(ValueError,match='exact project slug'):
+        cp.parse(meta,body(),'Demo')
+
+
+def test_checkpoint_survives_archive_and_rename_with_legacy_history(project):
+    legacy(project); key=snapshot(project); reg.refresh_project('Demo')
+    assert reg.set_archived('Demo',True)['status']=='ok'
+    assert cp.identity('Demo')==key
+    assert reg.refresh_project('Demo')['status']=='fresh'
+    assert reg.set_archived('Demo',False)['status']=='ok'
+    assert reg.rename('Demo','Renamed')['status']=='ok'
+    assert cp.identity('Renamed')==key
+    assert reg.refresh_project('Renamed')['status']=='generated'
+
+
+def test_project_status_is_published_only_from_valid_checkpoint(project):
+    snapshot(project,project_status='running')
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert reg.project('Demo')['status']=='running'
+    key=cp.identity('Demo')
+    meta={'type':'handoff','project':'Demo','checkpoint_version':1,'based_on':key,
+          'created_at':'2026-10-08T00:00:00Z','project_status':'invented'}
+    (project/'handoffs'/'invalid-status.md').write_text(frontmatter.dumps(frontmatter.Post(body(),**meta)))
+    reg.invalidate()
+    assert reg.refresh_project('Demo')['status']=='error'
+    assert reg.project('Demo')['status']=='running'
+
+
+def test_conflicts_can_be_reconciled_without_deleting_immutable_evidence(project):
+    root=snapshot(project); reg.refresh_project('Demo')
+    a=snapshot(project,'a.md',parent=root,content=body(state='CURRENT branch A.'))
+    b=snapshot(project,'b.md',parent=root,content=body(state='CURRENT branch B.'))
+    assert reg.refresh_project('Demo')['status']=='error'
+    prompt=app._prompt_text('handoff','Demo')
+    assert 'reconciles: [' in prompt and a in prompt and b in prompt
+    assert 'branch A.' in prompt and 'branch B.' in prompt
+    merged=snapshot(project,'reconciled.md',parent=root,
+                    content=body(state='CURRENT reconciled both branches.'),reconciles=[a,b])
+    assert reg.refresh_project('Demo')['status']=='generated'
+    assert cp.identity('Demo')==merged
+    assert len(list((project/'handoffs').glob('*.md')))==4
+    assert 'reconciled both branches' in reg.context_info('Demo')['context']
+
+
+def test_compact_export_preserves_tilde_code_fences(project):
+    value=body().replace('- host /srv/demo.', '~~~text\nSTATE\nOPEN\nDONE\n~~~')
+    snapshot(project,content=value)
+    export=cp.export_context('Demo',compact=True).split('\n',1)[1]
+    assert cp.split_context(export)['FACTS']=='~~~text\nSTATE\nOPEN\nDONE\n~~~'
+
+
+def test_late_sibling_of_already_published_update_resolves_at_common_ancestor(project):
+    root=snapshot(project); reg.refresh_project('Demo')
+    a=snapshot(project,'a.md',parent=root,content=body(state='CURRENT branch A.'))
+    reg.refresh_project('Demo')
+    b=snapshot(project,'b.md',parent=root,content=body(state='CURRENT branch B.'))
+    assert reg.refresh_project('Demo')['status']=='error'
+    parent,ids,material=cp.resolution('Demo')
+    assert parent==root and set(ids)=={a,b}
+    prompt=app._prompt_text('handoff','Demo')
+    assert 'based_on: '+root in prompt
+    merged=snapshot(project,'merge.md',parent=parent,reconciles=ids,content=body(state='CURRENT both.'))
+    assert reg.refresh_project('Demo')['checkpoint_id']==merged
+
+
+def test_bootstrap_button_is_valid_javascript_and_compress_upload_still_works(project,monkeypatch):
+    legacy(project)
+    client=app.app.test_client()
+    page=client.get('/p/Demo').get_data(as_text=True)
+    assert 'const route = "consolidate";' in page
+    assert 'rb-btn' not in page and 'bootstrap checkpoint with Gemini' in page
+    # Run the upload operation synchronously to inspect the API contract without
+    # polling threads; actual compressor generation remains unchanged.
+    monkeypatch.setattr(app,'_start',lambda key,fn: app.jsonify(fn()))
+    response=client.post('/api/compress',data={
+        'files':(io.BytesIO(b'## Next steps\n- TODO protect this task.\n## Completed work\n- DONE fixed parser.'),'notes.md'),
+        'mode':'safe','target_tokens':'3000'},content_type='multipart/form-data')
+    assert response.status_code==200 and response.json['ai_calls']==0
+    assert 'protect this task' in response.json['context']
+    assert 'DONE fixed parser' in response.json['context']

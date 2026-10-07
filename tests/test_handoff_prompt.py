@@ -87,7 +87,7 @@ FACTS
         )
         register.invalidate()
 
-    def test_handoff_prompt_context_selects_state_bearing_sections(self):
+    def test_handoff_prompt_preserves_full_checkpoint_sections(self):
         self._write_context()
 
         checkpoint = register.handoff_prompt_context("Demo")
@@ -99,8 +99,8 @@ FACTS
         self.assertIn("Add project-specific handoff prompts.", checkpoint)
         self.assertIn("REJECTED manual task management.", checkpoint)
 
-        self.assertNotIn("lots of file detail", checkpoint)
-        self.assertNotIn("historical low-value fact", checkpoint)
+        self.assertIn("lots of file detail", checkpoint)
+        self.assertIn("historical low-value fact", checkpoint)
 
         # Section separators must be real newlines, not literal backslash-n text.
         self.assertIn("\nSTATE\n", checkpoint)

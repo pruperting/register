@@ -27,12 +27,12 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-me}
       - OBSIDIAN_VAULT_NAME=${OBSIDIAN_VAULT_NAME:-Obsidian}
       - TZ=${TZ:-Europe/London}
-      # local = Ollama, gemini = API
+      # Legacy settings; ordinary checkpoint import and compression never use Ollama.
       - SUMMARY_BACKEND=${SUMMARY_BACKEND:-local}
       - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
       - LOCAL_CHAT_MODEL=${LOCAL_CHAT_MODEL:-qwen3:30b-a3b}
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-24576}
-      # Optional AI refinement only; deterministic compression is the default.
+      # Legacy compressor settings; upload compression remains deterministic.
       - COMPRESS_MODEL=${COMPRESS_MODEL:-llama3.1:8b}
       - COMPRESS_NUM_CTX=${COMPRESS_NUM_CTX:-8192}
       - COMPRESS_TIMEOUT_S=${COMPRESS_TIMEOUT_S:-900}
@@ -40,8 +40,11 @@ services:
       - COMPRESS_MAX_MB=${COMPRESS_MAX_MB:-20}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - SYNTHESIS_MODEL=${SYNTHESIS_MODEL:-gemini-2.5-pro}
       - AUTO_SUMMARY=${AUTO_SUMMARY:-true}
       - AUTO_SUMMARY_HOUR=${AUTO_SUMMARY_HOUR:-3}
-      - AUTO_SUMMARY_MAX_PER_RUN=${AUTO_SUMMARY_MAX_PER_RUN:-5}
+      - WEEKLY_SYNTHESIS=${WEEKLY_SYNTHESIS:-true}
+      - WEEKLY_SYNTHESIS_DAY=${WEEKLY_SYNTHESIS_DAY:-sun}
+      - WEEKLY_SYNTHESIS_HOUR=${WEEKLY_SYNTHESIS_HOUR:-4}
       - CONTEXT_VERIFY_REPAIRS=${CONTEXT_VERIFY_REPAIRS:-1}
 # No named volumes: the app is stateless. Everything lives in the vault.

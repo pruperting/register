@@ -1,5 +1,6 @@
 """Project register — Flask app."""
 import logging
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import markdown as _markdown
 
 import register
 import herald_status
+import checkpoints
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -93,6 +95,10 @@ def job(key):
 # ── pages ───────────────────────────────────────────────────────────
 @app.route("/")
 def index():
+    register.invalidate()
+    for item in register.project_list():
+        if not item["archived"] and item["handoff_count"]:
+            register.refresh_project(item["name"])
     projects = register.project_list()
     active = [p for p in projects if not p["archived"]]
     archived = [p for p in projects if p["archived"]]
@@ -118,7 +124,9 @@ def detail(name):
     p = register.project(name)
     if not p:
         return redirect(url_for("index"))
-    p = {**p, **register.runbook_info(name), **register.context_info(name)}
+    result = register.refresh_project(name)
+    p = register.project(name)
+    p = {**p, "checkpoint_result": result, **register.context_info(name)}
     return render_template("detail.html", p=p, statuses=register.STATUSES)
 
 
@@ -127,9 +135,8 @@ def detail(name):
 def compress_page():
     return render_template(
         "compress.html",
-        backend=register.SUMMARY_BACKEND,
-        model=(register.COMPRESS_MODEL if register.SUMMARY_BACKEND == "local"
-               else register.GEMINI_MODEL),
+        backend="deterministic",
+        model="none",
         max_mb=COMPRESS_MAX_MB,
     )
 
@@ -173,17 +180,11 @@ def api_compress():
 
 @app.route("/api/summary/<name>", methods=["POST"])
 def api_summary(name):
-    full = request.json.get("full", False) if request.is_json else False
-    # A correction is a cross-artifact transaction: status, CTX/2 and RUNBOOK
-    # must not disagree after one has been refreshed.
-    fn = (lambda: register.refresh_project(name, full=full)) if register.correction_propagation_needed(name) \
-         else (lambda: register.generate_summary(name, full=full))
-    return _start(f"summary:{name}", fn)
-
+    return _start(f"checkpoint:{name}", lambda: register.refresh_project(name))
 
 @app.route("/api/runbook/<name>", methods=["POST"])
 def api_runbook(name):
-    return _start(f"runbook:{name}", lambda: register.generate_runbook(name))
+    return jsonify(register.generate_runbook(name)), 410
 
 
 @app.route("/api/bootstrap/<name>", methods=["POST"])
@@ -199,10 +200,10 @@ def api_consolidate(name):
 @app.route("/api/context/<name>", methods=["GET", "POST"])
 def api_context(name):
     if request.method == "POST":
-        full = request.json.get("full", False) if request.is_json else False
-        fn = (lambda: register.refresh_project(name, full=full)) if register.correction_propagation_needed(name) \
-             else (lambda: register.generate_context(name, full=full))
-        return _start(f"context:{name}", fn)
+        return _start(f"checkpoint:{name}", lambda: register.refresh_project(name))
+    result = register.refresh_project(name)
+    if result.get("status") == "error":
+        return jsonify(result), 409
     p = register.project(name)
     if not p:
         return jsonify({"status": "error", "reason": "project not found"}), 404
@@ -212,7 +213,11 @@ def api_context(name):
     headers = {}
     if request.args.get("download") == "1":
         headers["Content-Disposition"] = f'attachment; filename="{register.context_name(p["name"])}"'
-    return Response(info["context"] + "\n", mimetype="text/plain", headers=headers)
+    try:
+        text = checkpoints.export_context(name, compact=request.args.get("compact") == "1")
+    except ValueError as e:
+        return jsonify({"status": "error", "reason": str(e)}), 409
+    return Response(text, mimetype="text/plain", headers=headers)
 
 
 @app.route("/api/status/<name>", methods=["POST"])
@@ -272,7 +277,9 @@ def api_create():
 @app.route("/api/refresh", methods=["POST"])
 def api_refresh():
     register.invalidate()
-    return jsonify({"status": "ok", "projects": len(register.all_projects())})
+    results = {p["name"]: register.refresh_project(p["name"]) for p in register.project_list()
+               if not p["archived"] and p["handoff_count"]}
+    return jsonify({"status": "ok", "projects": len(register.all_projects()), "checkpoints": results})
 
 
 # ── handoff prompt ──────────────────────────────────────────────────
@@ -290,14 +297,7 @@ def _slug_list() -> str:
 
 
 def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
-    """Two prompts, two jobs.
-
-    handoff  — what changed this session; appended to a running record and
-               folded into the project summary. Incremental.
-    debrief  — what the project IS today; a standalone context document to
-               paste at the start of a new chat. Supersedes rather than
-               accumulates, so it carries no history.
-    """
+    """Provide a complete-replacement conversation handoff or legacy debrief."""
     fname = "debrief_prompt.md" if kind == "debrief" else "handoff_prompt.md"
     try:
         template = (_PROMPT_DIR / fname).read_text(encoding="utf-8")
@@ -326,6 +326,18 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
                 or "(no repo recorded — set one on the project page)"
             )
             checkpoint = register.handoff_prompt_context(name)
+            try:
+                parent = checkpoints.identity(name)
+            except ValueError as e:
+                try:
+                    parent, conflicting_ids, material = checkpoints.resolution(name)
+                    checkpoint = register.context_info(name).get("context", "(No accepted snapshot yet.)")
+                    checkpoint += "\n\nEXPLICIT RECONCILIATION REQUIRED: compare every version below; never select one merely by timestamp.\n" + material
+                    template = template.replace("<RECONCILES>", "reconciles: " + json.dumps(conflicting_ids))
+                except ValueError as recovery_error:
+                    return "Checkpoint import failed: " + str(e) + ". " + str(recovery_error)
+            template = template.replace("<RECONCILES>", "")
+            template = template.replace("<BASED_ON>", parent)
             selection_rule = (
                 f"This prompt is already scoped to the exact Register project "
                 f"`{name}`. Use exactly `{name}` in the `project:` field. "
@@ -357,6 +369,8 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
             "conversation and choose a project from the slug list below.)",
         )
         .replace("<SLUG_LIST>", _slug_list())
+        .replace("<BASED_ON>", "ROOT")
+        .replace("<RECONCILES>", "")
     )
 
 
@@ -385,68 +399,46 @@ def api_stats():
         "with_context": len([p for p in ps if p.get("has_context")]),
         "files": sum(p["file_count"] for p in ps),
         "handoffs": sum(p["handoff_count"] for p in ps),
-        "summary_backend": register.SUMMARY_BACKEND,
+        "summary_backend": "conversation-checkpoint",
     })
 
 
 # ── scheduled refresh ───────────────────────────────────────────────
-# Runs nightly rather than weekly. A project with nothing new since its
-# summarised_through mark returns "fresh" without calling the model at
-# all, so a quiet night costs nothing — and a handoff note written on
-# Tuesday shows up Wednesday instead of the following Sunday.
-#
-# Only projects that HAVE handoff notes are refreshed automatically.
-# Historical AI conversations and other reference files are never an implicit
-# fallback. Legacy material must be explicitly bootstrapped into a handoff.
-AUTO_MAX = int(os.environ.get("AUTO_SUMMARY_MAX_PER_RUN", "5"))
+# Routine scans only validate/publish synced conversation checkpoints. No AI.
 
 
 def scheduled_refresh():
     register.invalidate()
-    done = skipped_no_handoff = 0
+    done = 0
     for p in register.project_list():
-        if p["archived"] or not p["file_count"]:
+        if p["archived"] or not p["handoff_count"]:
             continue
-        if not p["handoff_count"]:
-            skipped_no_handoff += 1
-            continue
-        if done >= AUTO_MAX:
-            logger.info("auto-summary cap (%d) reached; remainder next run",
-                        AUTO_MAX)
-            break
         try:
             res = register.refresh_project(p["name"])
-            logger.info("auto refresh %s → %s context=%s summary=%s runbook=%s",
-                        p["name"], res.get("status"),
-                        (res.get("context") or {}).get("status"),
-                        (res.get("summary") or {}).get("status"),
-                        (res.get("runbook") or {}).get("status"))
-            if res.get("status") == "generated":
-                done += 1
+            logger.info("checkpoint import %s → %s %s", p["name"], res.get("status"), res.get("reason", ""))
+            done += res.get("status") == "generated"
         except Exception:
-            logger.exception("auto refresh failed for %s", p["name"])
-    logger.info("auto summary run complete: %d generated, %d skipped "
-                "(no handoff notes — explicit bootstrap required)",
-                done, skipped_no_handoff)
+            logger.exception("checkpoint import failed for %s", p["name"])
+    logger.info("checkpoint scan complete: %d published; no AI calls", done)
 
 
 def scheduled_synthesis():
-    """Run the monthly whole-estate Gemini review in a child process."""
+    """Run the weekly whole-estate Gemini review in a child process."""
     script = Path(__file__).with_name("synthesise.py")
     cmd = [sys.executable, str(script), "--vault", str(register.VAULT_PATH)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     except Exception:
-        logger.exception("monthly synthesis failed to start")
+        logger.exception("weekly synthesis failed to start")
         return
     if proc.stdout.strip():
-        logger.info("monthly synthesis stdout: %s", proc.stdout.strip())
+        logger.info("weekly synthesis stdout: %s", proc.stdout.strip())
     if proc.stderr.strip():
-        logger.info("monthly synthesis stderr: %s", proc.stderr.strip())
+        logger.info("weekly synthesis stderr: %s", proc.stderr.strip())
     if proc.returncode:
-        logger.error("monthly synthesis exited %d", proc.returncode)
+        logger.error("weekly synthesis exited %d", proc.returncode)
     else:
-        logger.info("monthly synthesis complete")
+        logger.info("weekly synthesis complete")
 
 
 def scheduled_herald_export():
@@ -469,15 +461,15 @@ if _enabled("AUTO_SUMMARY", os.environ.get("WEEKLY_REFRESH", "true")):
     _sched.add_job(scheduled_refresh, "cron", hour=_hour, minute=0,
                    id="auto_summary", coalesce=True, max_instances=1)
     _sched_jobs += 1
-    logger.info("auto summary scheduled (daily %02d:00, max %d per run)",
-                _hour, AUTO_MAX)
+    logger.info("checkpoint scan scheduled (daily %02d:00; no AI)", _hour)
 
-if _enabled("MONTHLY_SYNTHESIS", "true"):
-    _syn_hour = int(os.environ.get("MONTHLY_SYNTHESIS_HOUR", "4"))
-    _sched.add_job(scheduled_synthesis, "cron", day=1, hour=_syn_hour, minute=0,
-                   id="monthly_synthesis", coalesce=True, max_instances=1)
+if _enabled("WEEKLY_SYNTHESIS", os.environ.get("MONTHLY_SYNTHESIS", "true")):
+    _syn_hour = int(os.environ.get("WEEKLY_SYNTHESIS_HOUR", "4"))
+    _syn_day = os.environ.get("WEEKLY_SYNTHESIS_DAY", "sun")
+    _sched.add_job(scheduled_synthesis, "cron", day_of_week=_syn_day, hour=_syn_hour, minute=0,
+                   id="weekly_synthesis", coalesce=True, max_instances=1)
     _sched_jobs += 1
-    logger.info("monthly synthesis scheduled (day 1 at %02d:00)", _syn_hour)
+    logger.info("weekly synthesis scheduled (%s at %02d:00)", _syn_day, _syn_hour)
 
 if _enabled("HERALD_STATUS_EXPORT", "true"):
     _hs_hour = int(os.environ.get("HERALD_STATUS_HOUR", "6"))
@@ -491,5 +483,5 @@ if _enabled("HERALD_STATUS_EXPORT", "true"):
 if _sched_jobs:
     _sched.start()
 
-logger.info("register ready: vault=%s backend=%s",
-            register.VAULT_PATH, register.SUMMARY_BACKEND)
+logger.info("register ready: vault=%s checkpoints=conversation-authored; routine AI calls=0",
+            register.VAULT_PATH)

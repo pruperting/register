@@ -65,102 +65,7 @@ class ContextTests(unittest.TestCase):
         self.assertIn('no handoff material', result['reason'])
         self.assertFalse(register.context_info('Demo')['has_context'])
 
-    def test_explicit_bootstrap_creates_compact_canonical_handoff_then_context(self):
-        convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
-        convo.mkdir(parents=True)
-        (convo / 'old-chat.md').write_text(
-            '---\nproject: Demo\ntitle: old chat\n---\n@ you asked\nmessage time: yesterday\n## What changed\n- CURRENT legacy feature works.\n',
-            encoding='utf-8')
-        register.invalidate()
 
-        canonical = '''# Legacy reference bootstrap
-## Objective
-- Continue Demo.
-## Current state
-- CURRENT legacy feature works.
-## Environment and deployment
-- not documented
-## Decisions and constraints
-- not documented
-## Corrections to previous records
-none
-## Open issues
-- not documented
-## Next steps
-- Verify current runtime.
-## Technical anchors
-- `app.py`
-'''
-        seen = {}
-        old_complete = register._complete
-        register._complete = lambda system, prompt, validator, expected, **kwargs: (
-            seen.update(prompt=prompt, backend=kwargs.get('backend')) or
-            canonical if validator(canonical) else (_ for _ in ()).throw(AssertionError('invalid fixture')))
-        try:
-            result = register.bootstrap_handoff('Demo')
-        finally:
-            register._complete = old_complete
-
-        self.assertEqual(result['status'], 'generated')
-        self.assertEqual(result['source_mode'], 'explicit-reference-bootstrap')
-        self.assertEqual(result['ai_calls'], 1)
-        self.assertLessEqual(result['estimated_tokens'], 4500)
-        self.assertIn('DETERMINISTIC LEGACY EVIDENCE', seen['prompt'])
-        register.invalidate()
-        project = register.project('Demo')
-        self.assertEqual(project['handoff_count'], 1)
-        self.assertGreaterEqual(project['reference_count'], 1)
-        self.assertEqual(project['conversation_count'], 1)
-        handoff = next(self.handoffs.iterdir()).read_text(encoding='utf-8')
-        self.assertIn('source_mode: explicit-reference-bootstrap', handoff)
-        self.assertIn('evidence_engine: deterministic-v14', handoff)
-        self.assertNotIn('@ you asked', handoff)
-        self.assertNotIn('message time:', handoff)
-
-        ctx = register.generate_context('Demo')
-        self.assertEqual(ctx['status'], 'generated')
-        self.assertEqual(ctx['source_mode'], 'handoffs')
-        info = register.context_info('Demo')
-        self.assertEqual(info['context_source_mode'], 'handoffs')
-
-    def test_bootstrap_rejects_transcript_shaped_ai_output(self):
-        convo = register.VAULT_PATH / 'ai-conversations' / 'claude' / 'Demo'
-        convo.mkdir(parents=True)
-        (convo / 'old-chat.md').write_text(
-            '---\nproject: Demo\ntitle: old chat\n---\nCURRENT legacy feature works.\n',
-            encoding='utf-8')
-        register.invalidate()
-
-        bad = '''# Legacy reference bootstrap
-## Objective
-@ you asked
-## Current state
-- CURRENT legacy feature works.
-## Environment and deployment
--
-## Decisions and constraints
--
-## Corrections to previous records
-none
-## Open issues
--
-## Next steps
--
-## Technical anchors
--
-'''
-        old_complete = register._complete
-        def fake_complete(system, prompt, validator, expected, **kwargs):
-            self.assertFalse(validator(bad))
-            raise RuntimeError('model produced invalid output twice')
-        register._complete = fake_complete
-        try:
-            result = register.bootstrap_handoff('Demo')
-        finally:
-            register._complete = old_complete
-        self.assertEqual(result['status'], 'error')
-        self.assertIn('invalid output', result['reason'])
-        self.assertEqual(list(self.handoffs.iterdir()), [])
 
     def test_bootstrap_is_refused_when_handoff_history_exists(self):
         self._handoff('existing.md', 'existing', '## What changed\n- CURRENT state.', 1000)
@@ -219,22 +124,6 @@ none
         self.assertFalse(register._documents_have_corrections(docs))
 
 
-    def test_refresh_project_regenerates_runbook_for_new_correction(self):
-        self._handoff('handoff-correction.md', 'correction',
-                      '## Corrections to previous records\n- CORRECTION | PREVIOUS: port 5000 | CURRENT: port 5050 | AFFECTS: status, AI context, runbook | EVIDENCE: verified deployment',
-                      3000)
-        calls = []
-        old_ctx, old_sum, old_rb = register.generate_context, register.generate_summary, register.generate_runbook
-        register.generate_context = lambda *a, **k: calls.append('context') or {'status': 'generated'}
-        register.generate_summary = lambda *a, **k: calls.append('summary') or {'status': 'generated'}
-        register.generate_runbook = lambda *a, **k: calls.append('runbook') or {'status': 'generated'}
-        try:
-            result = register.refresh_project('Demo')
-        finally:
-            register.generate_context, register.generate_summary, register.generate_runbook = old_ctx, old_sum, old_rb
-        self.assertEqual(result['status'], 'generated')
-        self.assertEqual(calls, ['context', 'summary', 'runbook'])
-        self.assertTrue(result['correction_runbook_refresh'])
 
 
     def test_summary_state_semantics_keeps_next_distinct_from_current(self):
@@ -258,45 +147,6 @@ REJECTED
         self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', guard)
         self.assertIn('Remove playstyle from calculate_tags_optimized.py', guard)
 
-    def test_summary_prompt_forbids_upgrading_planned_work_to_completed(self):
-        self._handoff('handoff-summary-state.md', 'state semantics',
-                      '''## What changed
-- CURRENT service is running.
-
-## Decisions and constraints
-- Playstyle removal is agreed.
-
-## Open issues
-- Path join remains unresolved.
-
-## Next steps
-- Remove playstyle from calculate_tags_optimized.py and apply_tags_optimized.py.''',
-                      4000)
-        seen = {}
-        safe = '''## Overview
-Demo project.
-
-## Where it stands
-The service is running. Playstyle removal has been agreed but is still pending. The path join remains unresolved.
-
-## Pick up here
-Remove playstyle from the two scripts, then resolve the path join.'''
-        old_complete = register._complete
-        def fake_complete(system, prompt, validator, expected, **kwargs):
-            seen['prompt'] = prompt
-            self.assertTrue(validator(safe))
-            return safe
-        register._complete = fake_complete
-        try:
-            result = register.generate_summary('Demo', full=True)
-        finally:
-            register._complete = old_complete
-        self.assertEqual(result['status'], 'generated')
-        prompt = seen['prompt']
-        self.assertIn('NEXT is future work', prompt)
-        self.assertIn('A decision to do something is not evidence that it has been implemented', prompt)
-        self.assertIn('FUTURE WORK — MUST NOT BE DESCRIBED AS COMPLETED', prompt)
-        self.assertIn('Remove playstyle from calculate_tags_optimized.py', prompt)
 
 
     def test_latest_context_baseline_replaces_older_handoff_history(self):
@@ -354,12 +204,6 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn('CURRENT later state.', joined)
         self.assertNotIn('CURRENT stale historical state.', joined)
 
-    def test_consolidation_records_exact_absorbed_handoff_paths(self):
-        source = Path(register.__file__).read_text(encoding='utf-8')
-        self.assertIn('source_handoff_paths = []', source)
-        self.assertIn('source_handoff_paths.append(f["path"])', source)
-        self.assertIn(
-            'source_handoff_paths: {json.dumps(source_handoff_paths)}', source)
 
     def test_created_at_orders_post_baseline_handoffs_independent_of_mtime(self):
         old = self._handoff(
@@ -532,126 +376,10 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn('CURRENT: port 5050', joined)
         self.assertIn('CURRENT: port 6060', joined)
 
-    def test_consolidate_handoffs_creates_baseline_and_rebuilds_context(self):
-        self._handoff('old.md', 'old',
-                      '## What changed\n- CURRENT old implementation existed.\n'
-                      '## Next steps\n- Replace old implementation.', 1000)
-        self._handoff('new.md', 'new',
-                      '## Current state\n- CURRENT replacement is live.\n'
-                      '## Open issues\n- Verify migration metrics.', 2000)
-
-        canonical = """# Legacy handoff consolidation
-## Objective
-- Continue Demo.
-## Current state
-- CURRENT replacement is live.
-## Corrections to previous records
-none
-## Decisions and constraints
-- Use the replacement implementation.
-## Environment and deployment
-- not documented
-## Workarounds and gotchas
-- Do not return to the old implementation.
-## Code
-- not documented
-## Dependencies and interactions
-- not documented
-## Open issues
-- Verify migration metrics.
-## Next steps
-- Verify migration metrics.
-"""
-        old_complete = register._complete
-        old_key = os.environ.get('GEMINI_API_KEY')
-        os.environ['GEMINI_API_KEY'] = 'test-key'
-        seen = {}
-
-        def fake_complete(system, prompt, validator, expected, **kwargs):
-            seen['backend'] = kwargs.get('backend')
-            self.assertTrue(validator(canonical))
-            return canonical
-
-        register._complete = fake_complete
-        try:
-            result = register.consolidate_handoffs('Demo')
-        finally:
-            register._complete = old_complete
-            if old_key is None:
-                os.environ.pop('GEMINI_API_KEY', None)
-            else:
-                os.environ['GEMINI_API_KEY'] = old_key
-
-        self.assertEqual(result['status'], 'generated')
-        self.assertEqual(result['ai_backend'], 'gemini')
-        self.assertEqual(result['source_handoffs'], 2)
-        self.assertEqual(seen['backend'], 'gemini')
-
-        register.invalidate()
-        p = register.project('Demo')
-        baseline_files = []
-        for f in p['handoffs']:
-            parsed = register._read(register.VAULT_PATH / f['path'])
-            if parsed and parsed[0].get('context_baseline'):
-                baseline_files.append(f)
-        self.assertEqual(len(baseline_files), 1)
-
-        docs, _ = register._all_material(p)
-        self.assertEqual(len(docs), 1)
-        joined = '\n'.join(body for _, body in docs)
-        self.assertIn('CURRENT replacement is live.', joined)
-        self.assertNotIn('CURRENT old implementation existed.', joined)
-
-        info = register.context_info('Demo')
-        self.assertTrue(info['has_context'])
-        self.assertIn('CURRENT replacement is live.', info['context'])
 
 
-    def test_consolidation_validator_diagnostics_present(self):
-        source = Path(register.__file__).read_text(encoding='utf-8')
-        self.assertIn('"validation_reason": validation["reason"]', source)
-        self.assertIn('"output_tokens": validation["tokens"]', source)
-        self.assertIn('"output_preview": validation["preview"]', source)
-        self.assertIn('re.finditer(pattern, text)', source)
 
 
-    def test_consolidation_redacts_model_output_before_write(self):
-        self._handoff('old.md', 'old', '## Current state\n- CURRENT demo is running.', 1000)
-        canonical = (
-            '# Legacy handoff consolidation\n'
-            '## Objective\n- Continue Demo.\n'
-            '## Current state\n- CURRENT demo is running.\n'
-            '## Corrections to previous records\nnone\n'
-            '## Decisions and constraints\n- none\n'
-            '## Environment and deployment\n'
-            '- API key AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12 must never persist.\n'
-            '## Workarounds and gotchas\n- none\n'
-            '## Code\n- none\n'
-            '## Dependencies and interactions\n- none\n'
-            '## Open issues\nnone\n'
-            '## Next steps\nnone\n'
-        )
-        old_complete = register._complete
-        old_key = os.environ.get('GEMINI_API_KEY')
-        os.environ['GEMINI_API_KEY'] = 'test-key'
-        def fake_complete(system, prompt, validator, expected, **kwargs):
-            self.assertTrue(validator(canonical))
-            return canonical
-        register._complete = fake_complete
-        try:
-            result = register.consolidate_handoffs('Demo')
-        finally:
-            register._complete = old_complete
-            if old_key is None:
-                os.environ.pop('GEMINI_API_KEY', None)
-            else:
-                os.environ['GEMINI_API_KEY'] = old_key
-        self.assertEqual(result['status'], 'generated')
-        self.assertGreaterEqual(result['output_redactions'].get('google_api_key', 0), 1)
-        baseline = register.VAULT_PATH / result['path']
-        written = baseline.read_text(encoding='utf-8')
-        self.assertNotIn('AIzaSyOUTPUTOUTPUTOUTPUTOUTPUTOUTPUT12', written)
-        self.assertIn('[REDACTED GOOGLE API KEY]', written)
 
     def test_consolidation_budget_scales_with_evidence(self):
         small = register._consolidation_budget(4000, 2)
@@ -685,14 +413,6 @@ none
             self.assertGreaterEqual(
                 budget["ceiling_tokens"], budget["target_tokens"])
 
-    def test_consolidation_uses_dynamic_generation_budget(self):
-        source = Path(register.__file__).read_text(encoding='utf-8')
-        self.assertIn('max_output_tokens: int | None = None', source)
-        self.assertIn('max_output_tokens=max_output_tokens', source)
-        self.assertIn(
-            'backend="gemini", max_output_tokens=generation_tokens', source)
-        self.assertNotIn(
-            'backend="gemini", max_output_tokens=4800', source)
 
 if __name__ == '__main__':
     unittest.main()

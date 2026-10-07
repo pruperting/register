@@ -12,7 +12,7 @@
       <a href="{{ url_for('index') }}" class="brand">project register</a>
       <a href="{{ url_for('compress_page') }}" class="ghost sm nav-link">compress</a>
       <button class="ghost sm" data-prompt="/prompt"
-              title="End-of-session prompt: what changed, folded into the project summary">handoff prompt</button>
+              title="End-of-session prompt: complete current checkpoint plus human summary">handoff prompt</button>
       <button class="ghost sm" id="refresh-btn">rescan vault</button>
     </header>
     {% block content %}{% endblock %}
@@ -48,6 +48,7 @@ function runJob(btn, url, key, body) {
       pollJob(key, btn, orig, res => {
         if (res.status === 'generated' || res.status === 'ok') return done('done ✓', true);
         if (res.status === 'fresh') return done('already current', false);
+        if (res.status === 'bootstrap-required') return done('bootstrap needed', true);
         done(`error: ${(res.reason || 'unknown').slice(0, 40)}`, false);
       });
     })

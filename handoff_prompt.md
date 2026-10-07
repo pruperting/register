@@ -1,186 +1,120 @@
-Please analyse our entire conversation from the beginning and produce a
-structured handoff document. Its purpose is twofold: for me to resume this
-project after months away, and to be folded automatically into a running
-project summary. It must be complete and accurate — but it is a summary,
-not a transcript.
+Use the ENTIRE conversation as the evidence to produce a COMPLETE replacement
+project checkpoint, not a session delta or transcript. Register will import your
+finished document directly; no later AI will repair, summarise or merge it.
 
-Begin the output with exactly this YAML frontmatter, filled in:
+PROJECT: <PROJECT>
+REPOSITORY: <REPO>
+<PROJECT_SELECTION_RULE>
 
-```
+The prior checkpoint below describes the project BEFORE this conversation.
+Reconcile it against all work and evidence in this conversation. Carry forward
+still-valid facts, technical anchors, deployment commands and constraints.
+For every prior OPEN/NEXT item, record whether it is DONE, still OPEN/NEXT,
+REJECTED, or SUPERSEDED. Never infer completion from silence, agreement or a
+proposal. Keep completed work in DONE and implemented reality in STATE.
+Retain relevant older DONE entries, corrections and rejected approaches so the
+next AI knows what was tried, completed and remains outstanding.
+
+<prior_project_checkpoint>
+CHECKPOINT_ID <BASED_ON>
+<CURRENT_CHECKPOINT>
+</prior_project_checkpoint>
+
+Return ONE Markdown document, without an outer code fence, preamble or sign-off.
+Begin with exactly this YAML frontmatter (quote project and title safely):
+
 ---
 type: handoff
 project: <PROJECT>
 date: <today's date, YYYY-MM-DD>
 created_at: <CREATED_AT>
-title: <one-line description of this session>
----
-```
-
-<PROJECT_SELECTION_RULE>
-
-Before writing the handoff, reconcile the full conversation against the
-project checkpoint below.
-
-PROJECT: <PROJECT>
-REPOSITORY: <REPO>
-
-The checkpoint describes the project BEFORE this conversation. It is evidence
-from previous handoffs, not a description that you should blindly repeat.
-
-<prior_project_checkpoint>
-<CURRENT_CHECKPOINT>
-</prior_project_checkpoint>
-
-Your most important job is to work out what THIS conversation changed.
-
-For every prior OPEN or NEXT item:
-- if it was completed in this conversation, explicitly record that it is now
-  completed/current and do not carry it forward as unfinished work;
-- if it is still unfinished, carry it forward under Open issues or Next steps;
-- if it was abandoned, rejected, replaced, or made irrelevant, say so
-  explicitly using REJECTED or SUPERSEDED;
-- if its wording changed but the work remains outstanding, preserve the actual
-  remaining work rather than creating a second duplicate task.
-
-For prior STATE/current facts:
-- preserve them only when this conversation did not replace or disprove them;
-- if this conversation changed a value, architecture, deployment state,
-  implementation status, path, command, dependency, or decision, record the
-  new value and add a strict CORRECTION when the previous record is now wrong;
-- never mark something completed merely because it was proposed, discussed,
-  planned, approved, or reacted to positively.
-
-Use the ENTIRE conversation as the evidence for this reconciliation. You are
-the AI that participated in the work, so perform this reconciliation here
-rather than leaving it for a later summariser to infer.
-
-Then use these sections as Markdown H2 headings, in this order:
-
-**Objective** What we set out to do in this session, in two or three
-sentences. If the objective changed partway through, say so and explain
-why.
-
-**What changed** What is actually different now that wasn't before —
-features added, bugs fixed, files created or modified. Be concrete and
-specific. Name files and functions rather than describing changes in the
-abstract.
-
-**Current state** Reconcile the starting checkpoint with this entire
-conversation and state the important CURRENT position at session end. Include
-implemented/running facts that the next AI genuinely needs. Do not simply copy
-the prior checkpoint. Do not put planned or unresolved work here.
-
-**Corrections to previous records** Review the current conversation for any
-evidence that a fact in an earlier handoff, debrief, project status, AI context,
-or runbook was wrong, misleading, materially incomplete, or has since been
-disproved. If so, call the correction out explicitly here — do not merely state
-the new value and leave the old claim ambiguous. Each correction MUST be one
-bullet using exactly this shape:
-
-`- CORRECTION | PREVIOUS: <the earlier wrong claim/value> | CURRENT: <the corrected authoritative claim/value> | AFFECTS: <project/status/AI context/runbook as applicable> | EVIDENCE: <what in this conversation established the correction>`
-
-Use one record per corrected fact. `PREVIOUS` is historical/audit information;
-`CURRENT` is authoritative from this point onward. If this conversation surfaced
-no correction to an earlier record, write exactly `none`. Corrections are
-continuation-critical and must never be omitted for brevity.
-
-**Decisions and constraints** Key decisions with the reasoning behind
-them, and any constraints we worked within. Distinguish clearly between
-what was decided and implemented, what was suggested but not acted on,
-and what remains open. Do not present an idea I merely reacted well to as
-a settled decision.
-
-**Estate changes** Only what this session changed or newly established
-about physical hardware, storage, or network. The full inventory lives in
-`projects/_estate/hardware.md`; do not reproduce it. If nothing physical
-changed, write "none". If something contradicts that document, say so.
-
-**Environment and deployment** Anything needed to run this: host, ports,
-paths, mounts, environment variables, image and container names, exact
-build and start commands, pinned dependency versions that matter,
-scheduled jobs reproduced verbatim. Carry forward what is known from
-earlier sessions and mark it as such; write "not discussed" only where
-nothing has ever been established — do not reconstruct plausible commands
-from general knowledge, and do not restate a value I corrected during the
-session in its uncorrected form.
-
-**Workarounds and gotchas** The non-obvious things: what broke and why,
-what the fix was, what looks wrong but is intentional, anything that will
-confuse me in three months. This is the highest-value section — be
-generous with it. Include the symptom as well as the fix, so I can
-recognise the problem if it recurs. Include any conclusion you reached
-during the session that later turned out to be wrong, and the reasoning
-that misled you.
-
-**Code** Carry-forward section for anything not stored in a repository.
-List files created or changed with a one-line description of each.
-Reproduce literal code or commands in full where they are (a) not saved
-anywhere on disk, (b) a config snippet, cron entry or command whose exact
-wording matters, or (c) a fix whose detail would be lost in prose. Any
-ad-hoc command or one-liner that took more than one attempt to get right
-must be reproduced verbatim. Do not reproduce full contents of files that
-live in a repository; name the repo and path instead.
-
-**Dependencies and interactions** How this connects to the rest of the
-system — other services it talks to, files that must change together,
-anything elsewhere that would break if this changed. Explicitly note
-anything that would fail silently rather than erroring.
-
-**Open issues** Unresolved problems, blockers, uncertainties, or previously
-open items that remain unresolved at session end. Do not include an old issue
-if this conversation solved it. Write `none` if there are no known open issues.
-
-**Next steps** Unfinished work and logical next actions, in priority order.
-Reconcile this against the starting checkpoint: remove work completed in this
-conversation, retain work that really remains, explicitly account for deferred
-items, and add genuinely new next actions. For each item say enough that I
-could start it cold without rereading this conversation.
-
-Rules for the whole document:
-
-- Only record what this conversation actually establishes. Where
-  something is unknown or wasn't covered, write "not discussed" rather
-  than inferring or filling the gap from general knowledge.
-- Prefer specifics over summary language: exact filenames, values, error
-  messages, version numbers, port numbers.
-- Note anything we tried that did not work and was abandoned, so I don't
-  repeat it.
-- Write for me alone, months from now, with no memory of this session. No
-  preamble, no sign-off, no offers of further help — the document is the
-  entire output.
-- Name the output file with the title of the conversation alongside
-  today's date, as a markdown file.
-
-I will save your output into my Obsidian vault. It does not matter which
-folder it lands in — the `project:` field above is what files it.
-
-CONTEXT CHECKPOINT RULES — these make the handoff safe to merge into the
-project's compact AI checkpoint:
-
-- For implementation-relevant facts, make the state explicit where ambiguity
-  is possible: CURRENT, SUPERSEDED, OPEN, or REJECTED.
-- Preserve exact filenames and paths, function/class names, API endpoints,
-  environment variables, database/schema names, versions, ports, commands,
-  important numeric values, and exact error text where it matters.
-- When a new fact replaces an older one, explicitly say what is superseded;
-  do not merely omit the old value. If the earlier value appeared in a previous
-  handoff/debrief, also record it in `## Corrections to previous records` using
-  the strict `CORRECTION | PREVIOUS | CURRENT | AFFECTS | EVIDENCE` form above.
-- Explicit corrections outrank every conflicting earlier record. Never restate
-  a corrected PREVIOUS value as CURRENT elsewhere in this handoff.
-- Do not call a proposal CURRENT unless it was actually implemented or the
-  conversation explicitly established it as the chosen design.
-- Treat the prior checkpoint as the starting position, not as text to repeat.
-  The finished handoff must reflect the state AFTER this conversation.
-- Never carry a prior NEXT/OPEN item forward merely because it existed before.
-  First decide from the full conversation whether it was completed, remains
-  open, or was rejected/superseded.
-- Conversely, never infer completion from silence. A prior unfinished item
-  remains unfinished unless this conversation provides evidence that it was
-  completed, rejected, superseded, or no longer applicable.
-
+title: <short description of the resulting checkpoint>
+checkpoint_version: 1
+based_on: <BASED_ON>
+project_status: <running/building/paused/idea/retired, or omit if not established>
+<RECONCILES>
 ---
 
-PROJECT SLUGS — copy one of these exactly into the `project:` field:
+If a reconciles list is supplied, copy it exactly and reconcile ALL the conflicting
+versions supplied below into the complete replacement. Never discard a conflict
+by selecting only the version you prefer.
 
+Copy based_on exactly; it links this update to its starting checkpoint. Do not
+invent a timestamp: use the supplied created_at value. If you used a DIFFERENT
+starting checkpoint in this conversation, use its CHECKPOINT_ID instead and
+explain the discrepancy to the owner before finalising. Use ROOT only for a
+new project with no prior evidence. For existing projects, use the project-
+specific prompt so Register can provide the correct starting identity.
+
+Then output exactly these two Markdown H2 headings, in this order:
+
+## Human summary
+
+A brief, readable Markdown summary (roughly 150–300 words, less for a small
+project). Explain purpose, current implemented state, verified completed work,
+important decisions, outstanding issues and immediate next actions. Preserve
+uncertainty. Do not claim a local commit was pushed or deployed without evidence.
+This is the summary Register displays in its UI; it must agree with CTX/2.
+
+## AI checkpoint
+
+Start with CTX/2, followed by ALL the following plain section headings exactly
+once, in this order. No Markdown # prefixes on the CTX headings. Put a single
+- beneath any empty section; absence never means "inherit older content".
+
+CTX/2
+GOAL
+- Stable project purpose and current objectives.
+STACK
+- Environment, deployment state, hosts, ports, mounts, versions, env variable NAMES; known build/start/schedule commands.
+ARCH
+- Current architecture, service interactions, authority model and dependencies.
+FILES
+- Repository URL, relevant paths, symbols, APIs and schemas; ad-hoc code/config not stored in a repo, where necessary.
+STATE
+- CURRENT implemented reality, latest verified results and deployment status; distinguish built/committed/pushed/deployed.
+DONE
+- Verified completed tasks and outcomes, including relevant carry-forward completions; retain IDs if available.
+CORRECTIONS
+- CORRECTION | PREVIOUS: <earlier wrong/superseded claim> | CURRENT: <authoritative value> | AFFECTS: <affected area> | EVIDENCE: <evidence>
+DEC
+- Decisions and rationale; distinguish chosen-but-pending designs from implementations.
+INV
+- Invariants, constraints, things that must remain true.
+BUG
+- Known bugs, exact errors, symptoms, fixes, gotchas, and useful failed attempts.
+OPEN
+- Unresolved issues, blockers, uncertainties and remaining TODOs; preserve IDs if available.
+NEXT
+- Ordered outstanding actions with enough detail to resume cold; preserve task IDs if available.
+REJECTED
+- REJECTED/SUPERSEDED tasks, designs and approaches with brief reasons; don't retry them silently.
+FACTS
+- Other continuation-critical facts, estate changes, or evidence not covered above.
+
+Preserve every still-useful implementation literal: exact paths, filenames,
+function/class names, endpoints, schema/table/column names, versions, ports,
+commands, config, important numbers and relevant error text. Code fences are
+allowed INSIDE section bodies for commands/config. Never include secret values,
+API keys, passwords, private keys or tokens; retain environment variable names
+and outstanding remediation tasks instead.
+
+Explicit corrections outrank conflicting earlier facts. PREVIOUS is historical
+only: never present it as current config elsewhere. Carry forward useful
+correction audit records. Record new corrections in the exact structured shape
+above rather than just omitting the old fact. Preserve unknowns as unknown;
+never fill gaps from general knowledge.
+
+Use terse bullets/semicolons where safe. Remove repetition and narrative first,
+not tasks, completed work, corrections, decisions, gotchas or technical anchors.
+Aim for a compact chat-ready checkpoint appropriate to the project's size;
+maximum 15000 estimated tokens (roughly 60000 characters) for the whole document.
+The snapshot is complete, so DO NOT rely on Register to union historical sections.
+
+Save as an ordinary .md handoff file named with this conversation and date,
+preferably under projects/<PROJECT>/handoffs/. Do not name the upload
+<PROJECT>_CONTEXT.md or <PROJECT>_summary.md: those are Register's derived views.
+The exact project frontmatter files the document even if Syncthing puts it elsewhere.
+
+PROJECT SLUGS — copy one exact slug, including capitalisation:
 <SLUG_LIST>

@@ -75,8 +75,7 @@
   {% for p in needs_handoff %}
     <a href="{{ url_for('detail', name=p.name) }}">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
   {% endfor %}.
-  Automatic context and summary refresh is paused for these projects until a
-  handoff exists. Their <code>handoffs/</code> folders are created automatically.
+  Create a complete first checkpoint from a conversation, or explicitly bootstrap historical material with Gemini once. Their <code>handoffs/</code> folders are created automatically.
 </div>
 {% endif %}
 

@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py register.py herald_status.py export-herald-status.py handoff_prompt.md debrief_prompt.md synthesise.py ./
+COPY app.py register.py checkpoints.py herald_status.py export-herald-status.py handoff_prompt.md debrief_prompt.md synthesise.py ./
 COPY templates/ templates/
 COPY static/ static/
 EXPOSE 5000

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""synthesise.py — monthly cross-project review.
+"""synthesise.py — weekly cross-project review.
 
 Feeds deterministic canonical project contexts to Gemini in one pass and
 asks the question the register cannot answer: not "what is the state of
@@ -8,10 +8,10 @@ pretending I'll finish".
 
 Gemini rather than the local model, deliberately: this needs the whole
 estate in one context window, which is exactly what CPU prompt processing
-is worst at and what a 1M-token context is best at. It runs monthly and
+is worst at and what a 1M-token context is best at. It runs weekly and
 costs pennies.
 
-Output: <vault>/projects/_estate/review-YYYY-MM.md, which the register
+Output: <vault>/projects/_estate/review-YYYY-MM-DD.md, which the register
 picks up as a file under the _estate project.
 
   ./synthesise.py                      # write the review
@@ -19,7 +19,7 @@ picks up as a file under the _estate project.
   ./synthesise.py --stdout             # print instead of writing
 
 Needs GEMINI_API_KEY in the environment.
-Cron:  0 4 1 * *  docker exec register python /app/synthesise.py --vault /vault
+Cron:  0 4 * * 0  docker exec register python /app/synthesise.py --vault /vault
 """
 import argparse
 import os
@@ -43,7 +43,7 @@ PROMPT = """You are reviewing the complete project estate of one person:
 a hobbyist self-hoster who starts many more projects than he finishes, and
 who wants an honest outside view rather than encouragement.
 
-Below are deterministic canonical project contexts. Each
+Below are accepted complete conversation-authored project checkpoints. Each
 project is delimited. Some are active, some have not been touched in
 months.
 
@@ -95,7 +95,7 @@ Rules:
 """
 
 
-_CTX_SECTIONS = ("GOAL", "STACK", "ARCH", "FILES", "STATE", "CORRECTIONS",
+_CTX_SECTIONS = ("GOAL", "STACK", "ARCH", "FILES", "STATE", "DONE", "CORRECTIONS",
                  "DEC", "INV", "BUG", "OPEN", "NEXT", "REJECTED", "FACTS")
 # Portfolio synthesis cares most about current truth and current action.  These
 # caps are ceilings, not quotas: unused room falls through to lower-priority
@@ -106,6 +106,7 @@ _PORTFOLIO_PRIORITY = (
     ("NEXT", 8000),
     ("GOAL", 3500),
     ("STATE", 7000),
+    ("DONE", 3500),
     ("DEC", 5000),
     ("BUG", 3500),
     ("INV", 3500),
@@ -301,7 +302,7 @@ def _redact_for_external_ai(text: str) -> tuple[str, dict[str, int]]:
 def collect(vault: Path) -> tuple[str, list[str]]:
     """Collect canonical CTX/2 plus deterministically compressed unsynced deltas.
 
-    The monthly AI never receives raw handoff documents. Existing canonical
+    The weekly AI never receives raw handoff documents. Existing canonical
     contexts are primary; any handoffs newer than context_through are compacted
     deterministically before inclusion so synthesis remains safe even if the
     daily refresh has not run yet.
@@ -313,83 +314,38 @@ def collect(vault: Path) -> tuple[str, list[str]]:
     # Import Register's deterministic compiler from the same application image.
     import register as reg
 
+    import checkpoints
+    original_vault = reg.VAULT_PATH
+    reg.VAULT_PATH = vault
+    reg.invalidate()
     blocks, included, trimmed = [], [], []
     used = 0
-
-    def last_touch(d: Path) -> float:
-        try:
-            return max((f.stat().st_mtime for f in d.rglob("*.md")), default=0)
-        except OSError:
-            return 0
-
-    entries = [
-        d for d in projects_dir.iterdir()
-        if d.is_dir()
-        and not d.name.startswith(".")
-        and d.name != "_estate"
-    ]
-    entries.sort(key=last_touch, reverse=True)
-
-    for d in entries:
-        meta = d / "_project.md"
-        if meta.exists() and "archived: true" in meta.read_text(encoding="utf-8", errors="replace").lower():
-            continue
-
-        context = d / f"{d.name}_CONTEXT.md"
-        summary = d / f"{d.name}_summary.md"
-        if not summary.exists():
-            summary = d / "_summary.md"
-
-        parts, proj_used = [], 0
-        context_hwm = 0.0
-        if context.exists():
-            ctext = context.read_text(encoding="utf-8", errors="replace").strip()
-            parts.append("CANONICAL DETERMINISTIC CONTEXT:\n" + ctext)
-            proj_used += len(parts[-1])
-            try:
-                import frontmatter
-                context_hwm = float(frontmatter.load(context).get("context_through", 0) or 0)
-            except Exception:
-                context_hwm = context.stat().st_mtime
-        elif summary.exists():
-            # Legacy fallback only for projects that have never had CTX generated.
-            st = summary.read_text(encoding="utf-8", errors="replace").strip()
-            parts.append("LEGACY STATUS SUMMARY (no CTX/2 yet):\n" + st[:PER_FILE_CHARS])
-            proj_used += len(parts[-1])
-
-        newer = sorted(
-            (f for f in d.rglob("*.md")
-             if not f.name.endswith(("_summary.md", "_RUNBOOK.md", "_CONTEXT.md"))
-             and f.name != "_project.md" and f.stat().st_mtime > context_hwm + 0.5),
-            key=lambda f: f.stat().st_mtime)
-        if newer:
-            docs=[]
-            for f in newer:
-                raw=f.read_text(encoding="utf-8", errors="replace")
-                docs.append((f.name, raw))
-            delta=reg._deterministic_compress(docs, profile="balanced", target_tokens=4000)
-            if delta.get("missing_hard"):
-                print(f"protected delta facts missing for {d.name}; omitting unsafe delta", file=sys.stderr)
-            else:
-                block="DETERMINISTIC NEW-HANDOFF DELTA:\n" + delta["context"]
-                parts.append(block)
-                proj_used += len(block)
-
-        if not parts:
-            continue
-        if proj_used > PER_PROJECT_CHARS:
-            parts=[_portfolio_clip(parts, PER_PROJECT_CHARS)]
-            trimmed.append(d.name)
-
-        newest = last_touch(d)
-        age = int((time.time() - newest) / 86400) if newest else -1
-        block=(f"\n\n===== PROJECT: {d.name} (last activity {age} days ago) =====\n\n" +
-               "\n\n".join(parts))
-        if used + len(block) > CHAR_BUDGET:
-            print(f"char budget reached — stopping at {d.name}", file=sys.stderr)
-            break
-        blocks.append(block); included.append(d.name); used += len(block)
-
+    try:
+        projects = [p for p in reg.project_list()
+                    if not p["archived"] and p["name"] != "_estate"]
+        projects.sort(key=lambda p: p.get("mtime", 0), reverse=True)
+        for p in projects:
+            result = reg.refresh_project(p["name"])
+            if result.get("status") in ("error", "bootstrap-required"):
+                print(f"{p['name']}: {result.get('reason')}; excluded until a valid complete checkpoint exists", file=sys.stderr)
+                continue
+            info = reg.context_info(p["name"])
+            parts = ["ACCEPTED COMPLETE CHECKPOINT (CTX/2):\n" + info["context"]]
+            if len(parts[0]) > PER_PROJECT_CHARS:
+                parts = [_portfolio_clip(parts, PER_PROJECT_CHARS)]
+                trimmed.append(p["name"])
+            head, _ = checkpoints.select(reg.project(p['name']))
+            activity = head['created_at']
+            from datetime import datetime, timezone
+            age = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(activity)).total_seconds() / 86400))
+            block = f"\n\n===== PROJECT: {p['name']} (checkpoint {activity}; {age} days ago) =====\n\n" + "\n\n".join(parts)
+            if used + len(block) > CHAR_BUDGET:
+                print(f"char budget reached — stopping at {p['name']}", file=sys.stderr)
+                break
+            blocks.append(block); included.append(p["name"]); used += len(block)
+    finally:
+        reg.VAULT_PATH = original_vault
+        reg.invalidate()
     if trimmed:
         print("trimmed: " + ", ".join(trimmed), file=sys.stderr)
     return "".join(blocks), included
@@ -438,9 +394,11 @@ def main():
     if not text:
         sys.exit("empty response from model")
 
+    text, _ = _redact_for_external_ai(text)
+
     header = (f"---\ntype: review\nproject: _estate\n"
               f"date: {date.today().isoformat()}\n"
-              f"title: Cross-project review, {date.today():%B %Y}\n"
+              f"title: Cross-project review, {date.today():%d %B %Y}\n"
               f"generated_by: {MODEL}\n"
               f"projects_reviewed: {len(included)}\n---\n\n")
 
@@ -448,7 +406,7 @@ def main():
         print(header + text)
         return
 
-    out = vault / "projects" / "_estate" / f"review-{date.today():%Y-%m}.md"
+    out = vault / "projects" / "_estate" / f"review-{date.today():%Y-%m-%d}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(header + text + "\n", encoding="utf-8")
     print(f"written: {out}", file=sys.stderr)

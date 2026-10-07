@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import register
+import checkpoints
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ MAX_SECTION_ITEMS = 12
 # deterministic context format; unknown future sections safely end the current
 # section when they are all-caps tokens.
 CTX_SECTIONS = {
-    "GOAL", "STACK", "ARCH", "FILES", "STATE", "CORRECTIONS", "DEC",
+    "GOAL", "STACK", "ARCH", "FILES", "STATE", "DONE", "CORRECTIONS", "DEC",
     "INV", "BUG", "OPEN", "NEXT", "REJECTED", "FACTS",
 }
 
@@ -154,11 +155,7 @@ def _project_payload(p: dict[str, Any]) -> dict[str, Any]:
         "file_count": int(p.get("file_count", 0) or 0),
         "open": opens,
         "next": nexts,
-        "derived_state_pending": bool(
-            latest_handoff
-            and (context_through < latest_handoff - 0.5
-                 or summary_through < latest_handoff - 0.5)
-        ),
+        "derived_state_pending": checkpoints.pending(p),
     }
 
 
