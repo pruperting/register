@@ -11,6 +11,7 @@ Begin the output with exactly this YAML frontmatter, filled in:
 type: handoff
 project: <PROJECT>
 date: <today's date, YYYY-MM-DD>
+created_at: <CREATED_AT>
 title: <one-line description of this session>
 ---
 ```

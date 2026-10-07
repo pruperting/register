@@ -361,6 +361,145 @@ Remove playstyle from the two scripts, then resolve the path join.'''
         self.assertIn(
             'source_handoff_paths: {json.dumps(source_handoff_paths)}', source)
 
+    def test_created_at_orders_post_baseline_handoffs_independent_of_mtime(self):
+        old = self._handoff(
+            'old.md', 'old',
+            '## Current state\n- CURRENT historical.', 1000)
+        baseline = self._handoff(
+            'baseline.md', 'baseline',
+            '## Current state\n- CURRENT baseline.', 5000)
+        first = self._handoff(
+            'first.md', 'first',
+            '## Current state\n- CURRENT first post-baseline.', 4000)
+        second = self._handoff(
+            'second.md', 'second',
+            '## Current state\n- CURRENT second post-baseline.', 2000)
+
+        old_rel = str(old.relative_to(register.VAULT_PATH))
+        btext = baseline.read_text(encoding='utf-8').replace(
+            'title: baseline\n',
+            'title: baseline\n'
+            'context_baseline: true\n'
+            f'source_handoff_paths: ["{old_rel}"]\n')
+        baseline.write_text(btext, encoding='utf-8')
+
+        for path, title, stamp in (
+            (first, 'first', '2026-10-07T10:00:00.000001Z'),
+            (second, 'second', '2026-10-07T11:00:00.000001Z'),
+        ):
+            text = path.read_text(encoding='utf-8')
+            text = text.replace(
+                f'title: {title}\n',
+                f'title: {title}\ncreated_at: {stamp}\n')
+            path.write_text(text, encoding='utf-8')
+
+        os.utime(first, (4000, 4000))
+        os.utime(second, (2000, 2000))
+        register.invalidate()
+
+        docs, _ = register._all_material(register.project('Demo'))
+        self.assertEqual([title for title, _ in docs],
+                         ['baseline', 'first', 'second'])
+
+    def test_context_freshness_uses_source_digest_not_mtime(self):
+        first = self._handoff(
+            'first.md', 'first',
+            '## Current state\n- CURRENT first state.', 5000)
+        text = first.read_text(encoding='utf-8').replace(
+            'title: first\n',
+            'title: first\ncreated_at: 2026-10-07T10:00:00.000001Z\n')
+        first.write_text(text, encoding='utf-8')
+        os.utime(first, (5000, 5000))
+        register.invalidate()
+
+        initial = register.generate_context('Demo')
+        self.assertEqual(initial['status'], 'generated')
+        self.assertEqual(register.generate_context('Demo')['status'], 'fresh')
+
+        second = self._handoff(
+            'second.md', 'second',
+            '## Current state\n- CURRENT second state.', 1000)
+        text = second.read_text(encoding='utf-8').replace(
+            'title: second\n',
+            'title: second\ncreated_at: 2026-10-07T11:00:00.000001Z\n')
+        second.write_text(text, encoding='utf-8')
+        os.utime(second, (1000, 1000))
+        register.invalidate()
+
+        rebuilt = register.generate_context('Demo')
+        self.assertEqual(rebuilt['status'], 'generated')
+        self.assertIn('CURRENT second state.',
+                      register.context_info('Demo')['context'])
+
+    def test_handoff_prompt_declares_precise_created_at(self):
+        prompt_source = (Path(register.__file__).with_name(
+            'handoff_prompt.md')).read_text(encoding='utf-8')
+        app_source = (Path(register.__file__).with_name(
+            'app.py')).read_text(encoding='utf-8')
+        self.assertIn('created_at: <CREATED_AT>', prompt_source)
+        self.assertIn(
+            'template = template.replace("<CREATED_AT>", created_at)',
+            app_source)
+
+    def test_newer_handoff_replaces_state_open_next_snapshots(self):
+        docs = [
+            ('baseline.md',
+             '## Current state\n'
+             '- CURRENT stale state overlay is active.\n'
+             '- Latest verified suite: 45 passed.\n'
+             '## Open issues\n'
+             '- Historical issue already resolved.\n'
+             '## Next steps\n'
+             '- Deploy obsolete v14 zip.'),
+            ('session.md',
+             '## Current state\n'
+             '- CURRENT handoffs are canonical evolving evidence.\n'
+             '- Latest verified suite: 38 passed.\n'
+             '## Open issues\n'
+             '- Verify the new baseline flow.\n'
+             '## Next steps\n'
+             '- Trial another project after Register verification.\n'
+             '## Corrections to previous records\n'
+             '- CORRECTION | PREVIOUS: older handoffs referenced test counts such as 45 passed | CURRENT: latest verified suite is 38 passed | AFFECTS: AI context | EVIDENCE: current test run'),
+        ]
+
+        out = register._deterministic_compress(
+            docs, profile='dense', target_tokens=3000)
+        context = out['context']
+
+        self.assertNotIn('stale state overlay is active', context)
+        self.assertNotIn('Latest verified suite: 45 passed.', context)
+        self.assertNotIn('Historical issue already resolved', context)
+        self.assertNotIn('Deploy obsolete v14 zip', context)
+        self.assertIn('handoffs are canonical evolving evidence', context)
+        self.assertIn('Latest verified suite: 38 passed.', context)
+        self.assertIn('Verify the new baseline flow', context)
+        self.assertIn('Trial another project after Register verification', context)
+        self.assertIn('CORRECTION | PREVIOUS:', context)
+
+    def test_snapshot_section_falls_back_when_newer_handoff_omits_it(self):
+        docs = [
+            ('baseline.md',
+             '## Current state\n'
+             '- CURRENT old state.\n'
+             '## Open issues\n'
+             '- Still-open baseline issue.\n'
+             '## Next steps\n'
+             '- Still-valid baseline next step.'),
+            ('session.md',
+             '## Current state\n'
+             '- CURRENT new state.'),
+        ]
+
+        out = register._deterministic_compress(
+            docs, profile='dense', target_tokens=2000)
+        context = out['context']
+
+        self.assertNotIn('CURRENT old state.', context)
+        self.assertIn('CURRENT new state.', context)
+        self.assertIn('Still-open baseline issue.', context)
+        self.assertIn('Still-valid baseline next step.', context)
+
     def test_dedupe_prefers_newest_repeated_next_item(self):
         docs = [
             ('one.md', '## Next steps\n- Deploy the refreshed Register container.'),

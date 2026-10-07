@@ -304,6 +304,11 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
     except OSError:
         return f"{fname} is missing from the container."
 
+    if kind == "handoff":
+        created_at = datetime.now(timezone.utc).isoformat(
+            timespec="microseconds").replace("+00:00", "Z")
+        template = template.replace("<CREATED_AT>", created_at)
+
     if kind == "debrief":
         p = register.project(project) if project else None
         name = p["name"] if p else (project or "<project slug>")

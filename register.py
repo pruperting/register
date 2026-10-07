@@ -10,6 +10,7 @@ Summaries are folded from HANDOFF documents — the context summaries an AI
 writes at the end of a session — rather than raw 170KB transcripts. That
 is what makes local CPU summarisation viable: seconds, not 40 minutes.
 """
+import hashlib
 import json
 import logging
 import os
@@ -476,12 +477,12 @@ def summary_info(name: str) -> dict:
     if not path.exists():
         return {"has_summary": False, "summary": "", "summary_at": "",
                 "summarised_through": 0.0, "summary_by": "",
-                "summary_source_mode": ""}
+                "summary_source_mode": "", "summary_source_digest": ""}
     parsed = _read(path)
     if parsed is None:
         return {"has_summary": False, "summary": "", "summary_at": "",
                 "summarised_through": 0.0, "summary_by": "",
-                "summary_source_mode": ""}
+                "summary_source_mode": "", "summary_source_digest": ""}
     meta, content = parsed
     return {
         "has_summary": True,
@@ -489,6 +490,7 @@ def summary_info(name: str) -> dict:
         "summary_at": str(meta.get("generated_at", ""))[:10],
         "summary_by": str(meta.get("generated_by", "")),
         "summary_source_mode": str(meta.get("source_mode", "legacy-unknown")),
+        "summary_source_digest": str(meta.get("source_digest", "") or ""),
         "summarised_through": float(meta.get("summarised_through", 0) or 0),
     }
 
@@ -499,13 +501,13 @@ def context_info(name: str) -> dict:
         return {"has_context": False, "context": "", "context_at": "",
                 "context_through": 0.0, "context_by": "",
                 "context_tokens": 0, "context_verified": False,
-                "context_source_mode": ""}
+                "context_source_mode": "", "context_source_digest": ""}
     parsed = _read(path)
     if parsed is None:
         return {"has_context": False, "context": "", "context_at": "",
                 "context_through": 0.0, "context_by": "",
                 "context_tokens": 0, "context_verified": False,
-                "context_source_mode": ""}
+                "context_source_mode": "", "context_source_digest": ""}
     meta, content = parsed
     return {
         "has_context": True,
@@ -516,6 +518,7 @@ def context_info(name: str) -> dict:
         "context_tokens": int(meta.get("estimated_tokens", 0) or 0),
         "context_verified": bool(meta.get("verified", False)),
         "context_source_mode": str(meta.get("source_mode", "legacy-unknown")),
+        "context_source_digest": str(meta.get("source_digest", "") or ""),
     }
 
 
@@ -532,6 +535,7 @@ def runbook_info(name: str) -> dict:
     try:
         return {"has_runbook": True,
                 "runbook": path.read_text(encoding="utf-8", errors="replace"),
+                "runbook_source_digest": str((_read(path) or ({}, ""))[0].get("source_digest", "") or ""),
                 "runbook_at": time.strftime(
                     "%Y-%m-%d", time.localtime(path.stat().st_mtime))}
     except OSError:
@@ -571,6 +575,63 @@ def _material(p: dict, since: float) -> tuple[list[str], float]:
     return blocks, hwm
 
 
+def _handoff_order_key(f: dict) -> tuple:
+    """Chronological key independent of Syncthing-preserved filesystem mtime."""
+    parsed = _read(VAULT_PATH / f["path"])
+    meta = parsed[0] if parsed else {}
+
+    created = str(meta.get("created_at", "") or "").strip()
+    if created:
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (dt.timestamp(), 0.0, str(f["path"]))
+        except ValueError:
+            logger.warning("invalid handoff created_at file=%s value=%r",
+                           f.get("path"), created)
+
+    authored_date = str(meta.get("date", "") or "").strip()[:10]
+    if authored_date:
+        try:
+            dt = datetime.strptime(authored_date, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc)
+            return (dt.timestamp(), float(f.get("mtime", 0.0) or 0.0),
+                    str(f["path"]))
+        except ValueError:
+            logger.warning("invalid handoff date file=%s value=%r",
+                           f.get("path"), authored_date)
+
+    return (float(f.get("mtime", 0.0) or 0.0), 0.0, str(f["path"]))
+
+
+def _canonical_source_digest(p: dict) -> str:
+    """Digest ordered evidence and metadata, versioned by compiler semantics."""
+    records = []
+    for f in _canonical_handoff_files(p):
+        parsed = _read(VAULT_PATH / f["path"])
+        if parsed is None:
+            continue
+        meta, text = parsed
+        records.append({"path": f["path"], "body": text.strip(),
+                        "meta": {k: meta.get(k) for k in (
+                            "title", "date", "created_at", "context_baseline",
+                            "source_handoff_paths")}})
+    payload = json.dumps({"compiler": "snapshot-digest-v2", "records": records},
+                         sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _derived_source_digest(p: dict) -> str:
+    """Include every metadata field supplied to derived-document prompts."""
+    payload = {"source": _canonical_source_digest(p),
+               "metadata": {k: p.get(k) for k in
+                            ("name", "description", "status", "repo", "notes")}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                    default=str).encode("utf-8")).hexdigest()
+
+
+
 def _canonical_handoff_files(p: dict) -> list[dict]:
     """Return canonical handoffs using an explicit baseline absorption manifest.
 
@@ -593,7 +654,7 @@ def _canonical_handoff_files(p: dict) -> list[dict]:
             baselines.append((f, meta))
 
     if not baselines:
-        return sorted(files, key=lambda f: f["mtime"])
+        return sorted(files, key=_handoff_order_key)
 
     manifest_baselines = [
         (f, meta) for f, meta in baselines
@@ -601,7 +662,7 @@ def _canonical_handoff_files(p: dict) -> list[dict]:
     ]
     if manifest_baselines:
         baseline, meta = max(
-            manifest_baselines, key=lambda item: item[0]["mtime"])
+            manifest_baselines, key=lambda item: _handoff_order_key(item[0]))
         absorbed = {
             str(path) for path in meta.get("source_handoff_paths", [])
             if str(path).strip()
@@ -610,10 +671,10 @@ def _canonical_handoff_files(p: dict) -> list[dict]:
             f for f in files
             if f["path"] != baseline["path"] and f["path"] not in absorbed
         ]
-        remaining.sort(key=lambda f: f["mtime"])
+        remaining.sort(key=_handoff_order_key)
         return [baseline] + remaining
 
-    ordered = sorted(files, key=lambda f: f["mtime"])
+    ordered = sorted(files, key=_handoff_order_key)
     baseline_index = None
     for idx, f in enumerate(ordered):
         if any(f["path"] == baseline[0]["path"] for baseline in baselines):
@@ -812,7 +873,7 @@ def consolidate_handoffs(name: str) -> dict:
         return {"status": "error", "reason": "project not found"}
     name = p["name"]
 
-    files = sorted(p.get("handoffs", []), key=lambda f: f["mtime"])
+    files = sorted(p.get("handoffs", []), key=_handoff_order_key)
     if not files:
         return {"status": "error", "reason": "no handoff history to consolidate"}
 
@@ -991,6 +1052,7 @@ Begin exactly with `# Legacy handoff consolidation`.
 
     body = (
         f"---\ntype: handoff\nproject: {name}\ndate: {stamp}\n"
+        f"created_at: {now.isoformat(timespec='microseconds').replace('+00:00', 'Z')}\n"
         f"title: Legacy handoff consolidation\n"
         f"source_mode: legacy-handoff-consolidation\n"
         f"context_baseline: true\n"
@@ -1216,9 +1278,10 @@ def generate_summary(name: str, full: bool = False) -> dict:
     source_docs = len(all_docs)
     raw_source_tokens = sum(_estimate_tokens(t) for _, t in all_docs)
 
+    source_digest = _derived_source_digest(p)
     # If the human summary already covers this canonical checkpoint, no AI work.
     if (not full and p.get("summary") and
-            float(p.get("summarised_through", 0.0) or 0.0) >= hwm - 0.5):
+            p.get("summary_source_digest") == source_digest):
         return {"status": "fresh", "input": "canonical-context", "ai_calls": 0}
 
     meta_bits = ""
@@ -1237,15 +1300,10 @@ def generate_summary(name: str, full: bool = False) -> dict:
     canonical_prompt_tokens = _estimate_tokens(context)
     large_project = (source_docs > LOCAL_AI_MAX_SOURCE_DOCS or canonical_prompt_tokens > LOCAL_AI_MAX_INPUT_TOKENS)
     batch_info = []
-    if large_project and os.environ.get("GEMINI_API_KEY", "").strip():
-        batched_context, batch_info = _batch_project_material(name, all_docs)
-        user += ("COVERAGE-PRESERVING DETERMINISTIC BATCH CONTEXTS. Every source handoff appears in exactly one chronological batch. Synthesize across ALL batches; do not let the newest batch dominate:\n<batch_contexts>\n" + batched_context + "\n</batch_contexts>\n\n")
-        strategy = "batched-gemini"
-    else:
-        user += ("CANONICAL DETERMINISTIC CONTEXT (CTX/2):\n<context>\n" + context + "\n</context>\n\n")
-        strategy = "canonical-local" if not large_project else "canonical-local-fallback"
-        if large_project:
-            logger.warning("summary large-project project=%s source_docs=%d raw_tokens~%d ctx_tokens~%d but GEMINI_API_KEY missing; local fallback uses canonical CTX/2", name, source_docs, raw_source_tokens, canonical_prompt_tokens)
+    # Snapshot precedence must be resolved globally before any model sees it.
+    # Independently compiled batches can resurrect older STATE/OPEN/NEXT units.
+    user += ("CANONICAL DETERMINISTIC CONTEXT (CTX/2):\n<context>\n" + context + "\n</context>\n\n")
+    strategy = "canonical-context"
     user += (
         "STATE SEMANTICS — AUTHORITATIVE INTERPRETATION OF CTX/2:\n"
         + _summary_state_semantics(context) + "\n\n"
@@ -1283,7 +1341,7 @@ def generate_summary(name: str, full: bool = False) -> dict:
         logger.error("summary failed for %s: %s", name, e)
         return {"status": "error", "reason": str(e)}
     logger.info("summary generation-done project=%s strategy=%s backend=%s output_tokens~%d", name, strategy, backend, _estimate_tokens(text))
-    err = _write_doc(name, summary_name(name), text, hwm, backend=backend, source_mode="handoffs-via-ctx2")
+    err = _write_doc(name, summary_name(name), text, hwm, backend=backend, source_mode="handoffs-via-ctx2", source_digest=source_digest)
     if err:
         return {"status": "error", "reason": err}
     invalidate()
@@ -1388,7 +1446,7 @@ def _atomic_write(path: Path, text: str) -> None:
 def generate_context(name: str, full: bool = False) -> dict:
     """Rebuild the canonical AI checkpoint deterministically from immutable handoffs.
 
-    The watermark is only a freshness detector. When new material exists, the
+    The source digest detects changes; watermarks are retained for compatibility. When new material exists, the
     checkpoint is rebuilt from all handoffs so repeated lossy recompression
     cannot accumulate. No LLM generation, verification, or repair is involved.
     """
@@ -1397,16 +1455,16 @@ def generate_context(name: str, full: bool = False) -> dict:
         return {"status": "error", "reason": "project not found"}
     name = p["name"]
 
-    # First use the watermark only to decide whether work is necessary.
-    since = 0.0 if full else p.get("context_through", 0.0)
-    pending, pending_hwm = _material(p, since)
-    if not pending and not full:
-        prev = p.get("context", "")
-        if prev and p.get("context_source_mode") == "handoffs":
-            return {"status": "fresh", "estimated_tokens": _estimate_tokens(prev),
-                    "engine": "deterministic", "ai_calls": 0,
-                    "source_mode": "handoffs"}
-        # No prior checkpoint: fall through to a full build.
+    # Freshness is content-based, not mtime-based. Syncthing may preserve an
+    # older filesystem timestamp for a newly-arrived handoff.
+    source_digest = _canonical_source_digest(p)
+    if (not full and p.get("context") and
+            p.get("context_source_mode") == "handoffs" and
+            p.get("context_source_digest") == source_digest):
+        return {"status": "fresh",
+                "estimated_tokens": _estimate_tokens(p.get("context", "")),
+                "engine": "deterministic", "ai_calls": 0,
+                "source_mode": "handoffs"}
 
     # Canonical state is derived only from immutable handoffs. Historical AI
     # conversations and other project files are reference material until the
@@ -1434,7 +1492,8 @@ def generate_context(name: str, full: bool = False) -> dict:
     tokens = _estimate_tokens(candidate)
     body = (f"---\ntype: project-context\nproject: {name}\nctx_version: 2\n"
             f"generated_by: deterministic-v14\ngenerated_at: {now}\n"
-            f"source_mode: handoffs\ncontext_through: {hwm}\nverified: deterministic-protected\n"
+            f"source_mode: handoffs\ncontext_through: {hwm}\n"
+            f"source_digest: {source_digest}\nverified: deterministic-protected\n"
             f"estimated_tokens: {tokens}\nsource_handoffs: {len(documents)}\n"
             f"protected_facts: {compiled.get('hard_facts', 0)}\n"
             f"corrections: {compiled.get('corrections', 0)}\n"
@@ -1478,6 +1537,9 @@ def generate_runbook(name: str) -> dict:
         return cres
     p = project(name)
     context = (p.get("context") or "").strip()
+    source_digest = _derived_source_digest(p)
+    if runbook_info(name).get("runbook_source_digest") == source_digest:
+        return {"status": "fresh", "ai_calls": 0}
     all_docs, _ = _all_material(p)
     if not context or not all_docs:
         return {"status": "error", "reason": "no canonical material to work from"}
@@ -1518,12 +1580,12 @@ def generate_runbook(name: str) -> dict:
     except Exception as e:
         logger.error("runbook failed for %s: %s", name, e)
         return {"status": "error", "reason": str(e)}
-    path = project_dir(name) / runbook_name(name)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text.strip() + "\n", encoding="utf-8")
-    except OSError as e:
-        return {"status": "error", "reason": f"vault not writable: {e}"}
+    err = _write_doc(name, runbook_name(name), text,
+                     float(p.get("context_through", 0.0) or 0.0),
+                     backend=backend, source_mode="handoffs-via-ctx2",
+                     source_digest=source_digest)
+    if err:
+        return {"status": "error", "reason": err}
     invalidate()
     return {"status": "generated", "source_mode": "handoffs",
             "input": "canonical-context+deterministic-evidence",
@@ -1548,41 +1610,30 @@ def latest_correction_mtime(name: str) -> float:
 
 
 def runbook_needs_correction_refresh(name: str) -> bool:
-    """A correction must not leave an older RUNBOOK authoritative."""
-    correction_mtime = latest_correction_mtime(name)
-    if not correction_mtime:
-        return False
-    path = project_dir(name) / runbook_name(name)
-    legacy = project_dir(name) / "RUNBOOK.md"
-    if not path.exists() and legacy.exists():
-        path = legacy
-    try:
-        runbook_mtime = path.stat().st_mtime if path.exists() else 0.0
-    except OSError:
-        runbook_mtime = 0.0
-    return correction_mtime > runbook_mtime + 0.5
+    """Refresh existing operational guidance on any canonical change.
 
-
-def correction_propagation_needed(name: str) -> bool:
-    """Whether any derived current-state artifact predates a correction."""
+    Create missing runbooks when structured corrections require propagation.
+    """
     p = project(name)
     if not p:
         return False
-    correction_mtime = latest_correction_mtime(name)
-    if not correction_mtime:
-        return False
-    context_stale = float(p.get("context_through", 0.0) or 0.0) < correction_mtime - 0.5
-    summary_stale = float(p.get("summarised_through", 0.0) or 0.0) < correction_mtime - 0.5
-    return context_stale or summary_stale or runbook_needs_correction_refresh(name)
+    info = runbook_info(name)
+    docs, _ = _all_material(p)
+    required = info.get("has_runbook") or _documents_have_corrections(docs)
+    return bool(required and info.get("runbook_source_digest") != _derived_source_digest(p))
+
+
+def correction_propagation_needed(name: str) -> bool:
+    """Route refreshes through the pipeline when operational guidance is stale."""
+    return runbook_needs_correction_refresh(name)
 
 
 def refresh_project(name: str, full: bool = False) -> dict:
     """Refresh all derived current-state artifacts, propagating corrections.
 
     Context and human status are always refreshed through their normal freshness
-    rules.  If a handoff/debrief correction is newer than the RUNBOOK (or the
-    RUNBOOK does not exist), regenerate it too so operational guidance cannot
-    retain a value explicitly corrected by newer source material.
+    rules. Existing RUNBOOKs follow every canonical/metadata change. Missing
+    RUNBOOKs are created when structured corrections require propagation.
     """
     ctx = generate_context(name, full=full)
     if ctx.get("status") == "error":
@@ -1602,13 +1653,14 @@ def refresh_project(name: str, full: bool = False) -> dict:
             "correction_runbook_refresh": runbook.get("status") == "generated"}
 
 
-def _write_doc(name: str, filename: str, text: str, hwm: float, backend: str | None = None, source_mode: str = "") -> str:
+def _write_doc(name: str, filename: str, text: str, hwm: float, backend: str | None = None, source_mode: str = "", source_digest: str = "") -> str:
     path = project_dir(name) / filename
     actual_backend = backend or SUMMARY_BACKEND
     by = LOCAL_CHAT_MODEL if actual_backend == "local" else GEMINI_MODEL
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     body = (f"---\ngenerated_by: {by}\ngenerated_at: {now}\n"
             + (f"source_mode: {source_mode}\n" if source_mode else "")
+            + (f"source_digest: {source_digest}\n" if source_digest else "")
             + f"summarised_through: {hwm}\n---\n\n{text.strip()}\n")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1872,7 +1924,7 @@ def _score(section:str,text:str,kind:str,heading:str)->int:
 
 def _parse_units(documents, reconcile=True):
     units=[]; order=0
-    for filename,body in documents:
+    for doc_index,(filename,body) in enumerate(documents):
         section="FACTS"; heading=""; lines=body.splitlines(); i=0
         while i<len(lines):
             raw=lines[i]; s=raw.strip()
@@ -1886,6 +1938,11 @@ def _parse_units(documents, reconcile=True):
                 elif any(k in low for k in ("workaround","gotcha","bug","error")): section="BUG"
                 elif "rejected" in low or "wrong" in low: section="REJECTED"
                 elif "open" in low: section="OPEN"
+                if section in {"STATE", "OPEN", "NEXT"}:
+                    units.append({"section": section, "heading": heading, "text": "",
+                                  "kind": "section-marker", "order": order,
+                                  "doc_index": doc_index})
+                    order += 1
                 i+=1; continue
             if s.startswith("```"):
                 block=[raw]; i+=1
@@ -1896,14 +1953,14 @@ def _parse_units(documents, reconcile=True):
                     i+=1
                 text="\n".join(block).strip()
                 units.append({"section":section,"heading":heading,"text":text,
-                              "kind":"code","order":order}); order+=1; continue
+                              "kind":"code","order":order,"doc_index":doc_index}); order+=1; continue
             if s.startswith("|"):
                 block=[]
                 while i<len(lines) and lines[i].strip().startswith("|"):
                     block.append(lines[i].rstrip()); i+=1
                 text="\n".join(block)
                 units.append({"section":section,"heading":heading,"text":text,
-                              "kind":"table","order":order}); order+=1; continue
+                              "kind":"table","order":order,"doc_index":doc_index}); order+=1; continue
             if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+",raw):
                 # Keep wrapped continuation lines attached to their bullet.
                 block=[raw.strip()]; i+=1
@@ -1915,7 +1972,7 @@ def _parse_units(documents, reconcile=True):
                     block.append(nxt.strip()); i+=1
                 text=_norm(" ".join(block))
                 units.append({"section":section,"heading":heading,"text":text,
-                              "kind":"bullet","order":order}); order+=1; continue
+                              "kind":"bullet","order":order,"doc_index":doc_index}); order+=1; continue
             if s and s!="---":
                 para=[s]; i+=1
                 while i<len(lines) and lines[i].strip() and not lines[i].lstrip().startswith(("#","```","|")) and not re.match(r"^\s*(?:[-*+]|\d+[.)])\s+",lines[i]):
@@ -1924,7 +1981,7 @@ def _parse_units(documents, reconcile=True):
                 # Split long prose so one verbose paragraph cannot crowd out facts.
                 for sent in _sentence_units(p):
                     units.append({"section":section,"heading":heading,"text":sent,
-                                  "kind":"prose","order":order}); order+=1
+                                  "kind":"prose","order":order,"doc_index":doc_index}); order+=1
                 continue
             i+=1
     first_goal=next((x["order"] for x in units if x["section"]=="GOAL"), None)
@@ -1946,6 +2003,30 @@ def _parse_units(documents, reconcile=True):
     if reconcile:
         units, _ = _reconcile_corrections(units)
     return units
+
+
+_SNAPSHOT_SECTIONS = {"STATE", "OPEN", "NEXT"}
+
+def _apply_snapshot_sections(units):
+    """Apply deterministic precedence to reconciled checkpoint sections.
+
+    STATE, OPEN and NEXT are end-of-session snapshots. If a newer canonical
+    handoff supplies one of these sections, older units from that section are
+    historical and do not remain active in CTX. If the newer handoff omits a
+    section entirely, the most recent earlier version is retained.
+    """
+    latest_doc = {}
+    for u in units:
+        section = u.get("section")
+        if section in _SNAPSHOT_SECTIONS:
+            latest_doc[section] = max(
+                latest_doc.get(section, -1), u["doc_index"])
+
+    return [
+        u for u in units
+        if u.get("kind") != "section-marker" and (u.get("section") not in _SNAPSHOT_SECTIONS
+            or u["doc_index"] == latest_doc[u["section"]])
+    ]
 
 
 def _dedupe_units(units):
@@ -2047,6 +2128,7 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
     input_tokens=_tok(source)
     parsed=_parse_units(documents, reconcile=False)
     parsed, correction_stats=_reconcile_corrections(parsed)
+    parsed=_apply_snapshot_sections(parsed)
     units=_dedupe_units(parsed)
     budget=_adaptive_budget(input_tokens, profile, target_tokens)
     emit(f"parsed files={len(documents)} units={len(units)} input_tokens~{input_tokens} adaptive_target={budget} ceiling={target_tokens}")
