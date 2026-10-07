@@ -164,6 +164,10 @@ token counts and budget is saved as `checkpoint-bootstrap-rejected-*.json` in
 the project directory. These diagnostic files are never imported as handoffs;
 the published checkpoint remains unchanged. Bootstrap does not automatically
 retry or make another AI call after rejection.
+For Gemini 2.5 bootstrap, reasoning has a 2048-token budget reserved in addition
+to the document generation allowance. The accepted document still has its
+dynamic size ceiling and absolute 15000 estimated-token limit. A response with
+`MAX_TOKENS` is always rejected, even if all section headings are present.
 
 Test before deployment, from the repository directory:
 

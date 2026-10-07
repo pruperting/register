@@ -1140,7 +1140,7 @@ def _select_ai_backend(input_tokens: int, source_docs: int = 1) -> str:
                        "falling back to local Ollama")
     return "local"
 
-def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None, response_details: dict | None = None) -> str:
+def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None, response_details: dict | None = None, thinking_budget: int | None = None) -> str:
     """One generation with validation and a single corrective retry. Local Ollama defaults to think:false."""
     selected_backend = backend or SUMMARY_BACKEND
     def call(messages):
@@ -1165,8 +1165,10 @@ def _complete(system: str, user: str, validator, expected: str, *, local_model: 
             joined = "\n\n".join(m["content"] for m in messages)
             config = (types.GenerateContentConfig(
                         max_output_tokens=max_output_tokens,
-                        temperature=0.2)
-                      if max_output_tokens else None)
+                        temperature=0.2,
+                        thinking_config=(types.ThinkingConfig(thinking_budget=thinking_budget)
+                                         if thinking_budget is not None else None))
+                      if max_output_tokens or thinking_budget is not None else None)
             response = client.models.generate_content(
                 model=GEMINI_MODEL, contents=joined, config=config)
             text = response.text or ""
@@ -1175,7 +1177,7 @@ def _complete(system: str, user: str, validator, expected: str, *, local_model: 
                 finish = candidates[0].finish_reason if candidates else None
                 response_details['finish_reason'] = str(getattr(finish, 'value', finish) or 'unknown')
                 usage = response.usage_metadata
-                for field in ('prompt_token_count', 'candidates_token_count', 'thoughts_token_count'):
+                for field in ('prompt_token_count', 'candidates_token_count', 'thoughts_token_count', 'total_token_count'):
                     response_details[field] = getattr(usage, field, None)
         if response_details is not None:
             response_details['raw_output'] = text

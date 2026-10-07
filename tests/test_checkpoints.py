@@ -205,7 +205,7 @@ def test_rejected_gemini_output_has_precise_redacted_diagnostics(project,monkeyp
     monkeypatch.setattr(reg,'_complete',cp_test_complete)
     result = reg.consolidate_handoffs('Demo')
     assert result['status']=='error' and len(calls)==1
-    assert 'every section once, in order' in result['reason']
+    assert 'truncated the checkpoint' in result['reason']
     assert 'MAX_TOKENS' in result['reason']
     diagnostic = json.loads((reg.VAULT_PATH/result['diagnostic_path']).read_text())
     assert secret not in json.dumps(diagnostic)
@@ -228,6 +228,43 @@ def test_bootstrap_budget_rejection_is_distinct_from_format_failure(project,monk
     assert 'output exceeds bootstrap ceiling' in result['reason']
     assert 'generic failure' not in result['reason']
     assert len(list((project/'handoffs').glob('*.md')))==1
+
+
+@pytest.mark.parametrize('model,reasoning', [('gemini-2.5-flash',2048), ('models/gemini-2.5-pro',2048), ('gemini-2.0-flash',None)])
+@pytest.mark.parametrize('finish', ['STOP','MAX_TOKENS'])
+def test_bootstrap_reserves_reasoning_and_rejects_even_structured_truncation(project,monkeypatch,model,reasoning,finish):
+    from types import SimpleNamespace
+    from google import genai
+    from google.genai import types
+    legacy(project); monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(reg,'GEMINI_MODEL',model)
+    monkeypatch.setattr(reg,'_consolidation_budget',lambda *a:dict(target_tokens=3000,ceiling_tokens=5000,generation_tokens=6000))
+    calls=[]
+    response=types.GenerateContentResponse(
+        candidates=[types.Candidate(finish_reason=finish,
+            content=types.Content(parts=[types.Part(text=body())]))],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=1200,candidates_token_count=200,thoughts_token_count=reasoning or 0))
+    def generate(**kwargs):
+        calls.append(kwargs);return response
+    monkeypatch.setattr(genai,'Client',lambda **kw:SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
+    monkeypatch.setattr(reg,'_complete',cp_test_complete)
+    result=reg.consolidate_handoffs('Demo')
+    assert len(calls)==1
+    config=calls[0]['config']
+    assert config.max_output_tokens==6000+(reasoning or 0)
+    if reasoning is None:
+        assert config.thinking_config is None
+    else:
+        assert config.thinking_config.thinking_budget==reasoning
+        assert config.model_dump(by_alias=True)['thinkingConfig']['thinkingBudget']==reasoning
+    if finish=='MAX_TOKENS':
+        assert result['status']=='error' and 'truncated' in result['reason']
+        assert len(list((project/'handoffs').glob('*.md')))==1
+        assert reg.refresh_project('Demo')['status']=='bootstrap-required'
+    else:
+        assert result['status']=='generated'
+        assert reg.refresh_project('Demo')['status']=='fresh'
 
 
 def test_concurrent_source_change_during_bootstrap_is_rejected(project,monkeypatch):
