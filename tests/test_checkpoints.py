@@ -388,6 +388,107 @@ def test_pending_herald_and_weekly_review_use_accepted_snapshot_only(project):
     assert 'NEW-HANDOFF DELTA' not in text
 
 
+@pytest.mark.parametrize('fence',['```','~~~'])
+def test_herald_tasks_ignore_code_labels_and_code_bullets(project,fence):
+    opens=f'- Investigate cache.\n{fence}\nNEXT\n- This is code, not a task.\n{fence}\n- Investigate worker.'
+    value=body(opens=opens)
+    snapshot(project,content=value);reg.refresh_project('Demo')
+    payload=herald_status._project_payload(reg.project('Demo'))
+    assert payload['open']==['Investigate cache.','Investigate worker.']
+    assert payload['next']==['TODO T-3: deploy.']
+
+
+def test_herald_export_baseline_state_changes_new_tasks_and_archival(project,monkeypatch):
+    monkeypatch.setattr(herald_status,'ESTATE_DIR',project.parent/'_estate')
+    # Preserved Syncthing timestamps and second-resolution JSON times must not
+    # hide a new accepted checkpoint whose changes are outside OPEN/NEXT.
+    monkeypatch.setattr(herald_status,'_iso',lambda ts:'2026-10-09T20:00:00Z' if ts else None)
+    snapshot(project);reg.refresh_project('Demo')
+    output=project.parent/'_estate'/'test-herald-status.json'
+    first=herald_status.export_status(output)
+    assert first['baseline'] and not first['changes']['new_open']
+    second=herald_status.export_status(output)
+    assert not second['baseline'] and not second['changes']['projects']
+    snapshot(project,'two.md',content=body(state='CURRENT worker fixed.'))
+    reg.refresh_project('Demo')
+    third=herald_status.export_status(output)
+    assert third['changes']['projects']==['Demo']
+    assert not third['changes']['new_open']
+    assert third['projects'][0]['checkpoint_id']!=second['projects'][0]['checkpoint_id']
+    snapshot(project,'three.md',content=body(opens='- TODO T-2: investigate cache.\n- TODO T-4: inspect logs.'))
+    reg.refresh_project('Demo')
+    fourth=herald_status.export_status(output)
+    assert [x['item'] for x in fourth['changes']['new_open']]==['TODO T-4: inspect logs.']
+    assert herald_status._item_id('Demo',' Todo   T-4: inspect logs. ')==fourth['changes']['new_open'][0]['id']
+    assert not fourth['counts']['pending_derived_state']
+    reg.set_archived('Demo',True)
+    archived=herald_status.export_status(output)
+    assert not archived['projects']
+
+
+@pytest.mark.parametrize('finish,kind', [('STOP','complete'),('MAX_TOKENS','complete'),('STOP','missing'),('STOP','empty')])
+def test_weekly_review_cli_validates_before_replacing_and_redacts(project,monkeypatch,finish,kind):
+    from types import SimpleNamespace
+    from google import genai
+    from google.genai import types
+    secret='AIza'+'S'*32
+    text='\n\n'.join('## '+s+'\n'+('Review '+secret if i==0 else 'Evidence-based observation.')
+                         for i,s in enumerate(synthesise.REVIEW_SECTIONS))
+    if kind=='missing':text=text.split('## Do these three things next')[0]
+    if kind=='empty':text=text.split('## Do these three things next')[0]+'## Do these three things next\n'
+    monkeypatch.setattr(synthesise,'collect',lambda vault:('Accepted checkpoint '+secret,['Demo']))
+    monkeypatch.setenv('GEMINI_API_KEY','test')
+    monkeypatch.setattr(sys,'argv',['synthesise.py','--vault',str(reg.VAULT_PATH)])
+    response=types.GenerateContentResponse(candidates=[types.Candidate(finish_reason=finish,
+        content=types.Content(parts=[types.Part(text=text)]))])
+    calls=[]
+    def generate(**kwargs):
+        assert secret not in kwargs['contents']
+        calls.append(kwargs);return response
+    monkeypatch.setattr(genai,'Client',lambda **kw:SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
+    out=project.parent/'_estate'/('review-'+synthesise.date.today().isoformat()+'.md')
+    out.parent.mkdir();out.write_text('PREVIOUS VALID REVIEW')
+    if finish=='STOP' and kind=='complete':
+        synthesise.main()
+        saved=out.read_text()
+        assert 'projects_reviewed: 1' in saved and secret not in saved
+        assert '[REDACTED GOOGLE API KEY]' in saved
+        assert all('## '+s in saved for s in synthesise.REVIEW_SECTIONS)
+        assert not out.with_name(out.name+'.tmp').exists()
+        monkeypatch.setattr(herald_status,'ESTATE_DIR',out.parent)
+        payload=herald_status.build_payload()
+        assert payload['portfolio_review']['file']==out.name
+        assert payload['portfolio_review']['age_days']==0
+    else:
+        with pytest.raises(SystemExit):synthesise.main()
+        assert out.read_text()=='PREVIOUS VALID REVIEW'
+    assert len(calls)==1
+
+
+def test_weekly_review_dry_run_excludes_unseeded_archived_and_estate(project,monkeypatch,capsys):
+    snapshot(project)
+    for slug in ('Unseeded','Archived','_estate'):
+        root=project.parent/slug;root.mkdir()
+        (root/'_project.md').write_text('---\ndescription: excluded\n---\n')
+    reg.set_archived('Archived',True)
+    monkeypatch.setattr(sys,'argv',['synthesise.py','--vault',str(reg.VAULT_PATH),'--dry-run'])
+    monkeypatch.delenv('GEMINI_API_KEY',raising=False)
+    with pytest.raises(SystemExit) as stop:synthesise.main()
+    assert stop.value.code==0
+    output=capsys.readouterr()
+    assert output.out.strip()=='Demo'
+    assert 'Unseeded' in output.err and '1 projects' in output.err
+
+
+def test_compression_reports_protected_overflow_without_dropping_tasks(project):
+    tasks='\n'.join(f'- TODO T-{i}: preserve /srv/demo/item-{i} and investigate '+('details '*30) for i in range(30))
+    result=reg._deterministic_compress([('ctx.md','CTX/2\nOPEN\n'+tasks)],target_tokens=700)
+    assert result['protected_tokens']>result['soft_target']
+    assert result['budget_overflow']==result['output_tokens']-result['soft_target']
+    assert result['overflow_reason']=='protected-facts' and not result['missing_hard']
+    assert all(f'TODO T-{i}:' in result['context'] for i in range(30))
+
+
 def test_scheduled_refresh_no_ai_and_weekly_sunday_trigger(project):
     snapshot(project)
     app.scheduled_refresh()

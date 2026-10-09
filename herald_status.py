@@ -62,12 +62,19 @@ def _section_lines(context: str, wanted: str) -> list[str]:
     """Return lines inside one CTX/2 top-level section."""
     out: list[str] = []
     inside = False
+    fence = None
     for raw in (context or "").splitlines():
         token = raw.strip()
-        if token == wanted:
+        if token.startswith(('```', '~~~')):
+            marker = token[:3]
+            fence = None if fence == marker else marker if fence is None else fence
+            if inside:
+                out.append(raw)
+            continue
+        if fence is None and token == wanted:
             inside = True
             continue
-        if inside and (token in CTX_SECTIONS or re.fullmatch(r"[A-Z][A-Z0-9_-]{2,}", token or "")):
+        if inside and fence is None and (token in CTX_SECTIONS or re.fullmatch(r"[A-Z][A-Z0-9_-]{2,}", token or "")):
             break
         if inside:
             out.append(raw)
@@ -83,7 +90,7 @@ def _section_items(context: str, wanted: str, limit: int = MAX_SECTION_ITEMS) ->
     """
     items: list[str] = []
     current: str | None = None
-    in_fence = False
+    fence = None
 
     def flush() -> None:
         nonlocal current
@@ -95,10 +102,11 @@ def _section_items(context: str, wanted: str, limit: int = MAX_SECTION_ITEMS) ->
 
     for raw in _section_lines(context, wanted):
         s = raw.strip()
-        if s.startswith("```"):
-            in_fence = not in_fence
+        if s.startswith(('```', '~~~')):
+            marker = s[:3]
+            fence = None if fence == marker else marker if fence is None else fence
             continue
-        if in_fence or not s or s == "-" or s.startswith("@"):
+        if fence or not s or s == "-" or s.startswith("@"):
             continue
 
         m = re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)(.+)$", s)
@@ -146,6 +154,8 @@ def _project_payload(p: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "name": p["name"],
+        "checkpoint_id": (p.get("context_source_digest") or None)
+                         if p.get("context_source_mode") == "conversation-checkpoint" else None,
         "status": p.get("status") or "unset",
         "last_activity_at": _iso(float(p.get("mtime", 0.0) or 0.0)),
         "last_handoff_at": _iso(latest_handoff),
@@ -187,7 +197,7 @@ def _load_previous(path: Path) -> dict[str, Any] | None:
 
 def _project_changed(cur: dict[str, Any], prev: dict[str, Any]) -> bool:
     fields = (
-        "status", "last_activity_at", "last_handoff_at", "context_updated_at",
+        "checkpoint_id", "status", "last_activity_at", "last_handoff_at", "context_updated_at",
         "summary_updated_at", "open", "next", "derived_state_pending",
     )
     return any(cur.get(k) != prev.get(k) for k in fields)

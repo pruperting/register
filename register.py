@@ -522,24 +522,6 @@ def context_info(name: str) -> dict:
     }
 
 
-def runbook_info(name: str) -> dict:
-    path = project_dir(name) / runbook_name(name)
-    legacy = project_dir(name) / "RUNBOOK.md"
-    if not path.exists() and legacy.exists():
-        try:
-            legacy.rename(path)
-        except OSError:
-            path = legacy
-    if not path.exists():
-        return {"has_runbook": False, "runbook": ""}
-    try:
-        return {"has_runbook": True,
-                "runbook": path.read_text(encoding="utf-8", errors="replace"),
-                "runbook_source_digest": str((_read(path) or ({}, ""))[0].get("source_digest", "") or ""),
-                "runbook_at": time.strftime(
-                    "%Y-%m-%d", time.localtime(path.stat().st_mtime))}
-    except OSError:
-        return {"has_runbook": False, "runbook": ""}
 
 
 _SYSTEM = (
@@ -777,19 +759,6 @@ def _batch_project_material(name: str, docs: list[tuple[str, str]]) -> tuple[str
     return joined, batches
 
 
-def _canonical_context_for_ai(name: str, *, refresh: bool = True) -> tuple[dict, str]:
-    """Return current deterministic CTX/2 for downstream AI views."""
-    if refresh:
-        res = generate_context(name)
-        if res.get("status") == "error":
-            return res, ""
-    p = project(name)
-    if not p:
-        return {"status": "error", "reason": "project not found"}, ""
-    context = (p.get("context") or "").strip()
-    if not context:
-        return {"status": "error", "reason": "canonical context unavailable"}, ""
-    return {"status": "ok"}, context
 
 
 def _summary_state_semantics(context: str) -> str:
@@ -834,32 +803,8 @@ _HANDOFF_PROMPT_SECTIONS = (
     "REJECTED",
 )
 
-_HANDOFF_PROMPT_HEADERS = (
-    "GOAL",
-    "STACK",
-    "ARCH",
-    "FILES",
-    "STATE",
-    "CORRECTIONS",
-    "DEC",
-    "INV",
-    "BUG",
-    "OPEN",
-    "NEXT",
-    "REJECTED",
-    "FACTS",
-)
 
 
-def _context_section(context: str, section: str) -> str:
-    """Return one CTX/2 section body without interpreting it."""
-    header_re = "|".join(re.escape(x) for x in _HANDOFF_PROMPT_HEADERS)
-    match = re.search(
-        rf"(?ms)^{re.escape(section)}\s*$\n"
-        rf"(.*?)(?=^(?:{header_re})\s*$|\Z)",
-        context or "",
-    )
-    return match.group(1).strip() if match else ""
 
 
 def handoff_prompt_context(name: str) -> str:
@@ -882,21 +827,9 @@ def generate_summary(name: str, full: bool = False) -> dict:
     return checkpoints.publish(name)
 
 
-_CONTEXT_SYSTEM = _SYSTEM + (
-    " Maintain a compact canonical checkpoint for another AI that will continue "
-    "the project later. Optimise for information per token, not prose quality. "
-    "Never drop implementation-relevant literals or silently turn an open idea "
-    "into a decision."
-)
-
-_CONTEXT_SECTIONS = ("GOAL", "STACK", "ARCH", "FILES", "STATE", "DEC", "INV",
-                     "BUG", "OPEN", "NEXT", "REJECTED")
 
 
-def _context_valid(text: str) -> bool:
-    text = text.strip()
-    return text.startswith("CTX/1") and all(f"\n{s}\n" in "\n" + text + "\n"
-                                            for s in _CONTEXT_SECTIONS)
+
 
 
 def _estimate_tokens(text: str) -> int:
@@ -904,64 +837,8 @@ def _estimate_tokens(text: str) -> int:
     return max(1, round(len(text) / 4)) if text else 0
 
 
-def _context_task(name: str, prev: str, blocks: list[str], p: dict) -> str:
-    meta = []
-    if p.get("description"):
-        meta.append(f"description={p['description']}")
-    if p.get("status"):
-        meta.append(f"status={p['status']}")
-    if p.get("repo"):
-        meta.append(f"repo={p['repo']}")
-    if p.get("notes"):
-        meta.append("owner_notes=" + p["notes"][:2000])
-    user = f'Project: "{name}"\n'
-    if meta:
-        user += "AUTHORITATIVE PROJECT META:\n" + "\n".join(meta) + "\n\n"
-    if prev:
-        user += "EXISTING VERIFIED CONTEXT:\n<context>\n" + prev + "\n</context>\n\n"
-    user += "NEW MATERIAL (oldest first):\n<material>\n" + "\n\n---\n\n".join(blocks) + "\n</material>\n\n"
-    user += """TASK: Produce the complete replacement canonical checkpoint.
-Merge the existing context with the new material. Newer explicit facts supersede
-older conflicting facts; preserve old facts that remain valid. Distinguish:
-CURRENT = true now; SUPERSEDED = formerly true; OPEN = unresolved; REJECTED =
-deliberately not being used. Prefer current state over narrative history.
-
-PRESERVE EXACTLY when material establishes them: filenames/paths, function and
-class names, API endpoints, environment variables, schemas/table/column names,
-versions, ports, commands, important numeric values, exact error text where
-useful, decisions plus rationale, invariants/constraints, unresolved bugs and
-next actions. Do not invent missing facts.
-
-Use terse fragments and semicolon-separated facts where safe. Avoid explanatory
-prose, repetition and Markdown decoration. Start with CTX/1 and include EVERY
-section below in this exact order; use '-' when empty:
-
-CTX/1
-GOAL
-STACK
-ARCH
-FILES
-STATE
-DEC
-INV
-BUG
-OPEN
-NEXT
-REJECTED
-"""
-    return user
 
 
-def _verify_context(prev: str, blocks: list[str], candidate: str) -> tuple[bool, str]:
-    source = ""
-    if prev:
-        source += "EXISTING VERIFIED CONTEXT:\n" + prev + "\n\n"
-    source += "NEW MATERIAL:\n" + "\n\n---\n\n".join(blocks)
-    prompt = f"""SOURCE:\n<source>\n{source}\n</source>\n\nCANDIDATE:\n<candidate>\n{candidate}\n</candidate>\n\nCheck whether CANDIDATE preserves every still-valid implementation-relevant fact in SOURCE and correctly incorporates newer superseding facts. Check especially exact paths, symbols, endpoints, environment variables, schemas, versions, ports, commands, numeric values, errors, decisions/rationale, invariants, unresolved bugs and TODOs. Do not require conversational history or resolved dead ends unless they are explicitly important to avoid repeating a mistake.\n\nIf complete and non-contradictory output exactly:\nOK\n\nOtherwise output:\nMISSING_OR_WRONG\n- one precise repair instruction per issue\n"""
-    out = _complete(_CONTEXT_SYSTEM, prompt,
-                    lambda t: t.strip() == "OK" or t.startswith("MISSING_OR_WRONG"),
-                    "'OK' or 'MISSING_OR_WRONG'")
-    return out.strip() == "OK", out.strip()
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -1055,11 +932,6 @@ def generate_context(name: str, full: bool = False) -> dict:
     return result
 
 
-_RUNBOOK_SYSTEM = _SYSTEM + (
-    " Record ONLY what the material states. If something is not in the "
-    "material, write 'not documented' — an invented deployment step is "
-    "worse than an absent one."
-)
 
 
 def generate_runbook(name: str) -> dict:
@@ -1067,8 +939,6 @@ def generate_runbook(name: str) -> dict:
     return {"status": "error", "reason": "RUNBOOK generation retired; use the complete checkpoint", "ai_calls": 0}
 
 
-def correction_propagation_needed(name: str) -> bool:
-    return False  # Corrections and summary arrive together in a single snapshot.
 
 
 def refresh_project(name: str, full: bool = False) -> dict:
@@ -1077,22 +947,6 @@ def refresh_project(name: str, full: bool = False) -> dict:
     return checkpoints.publish(name)
 
 
-def _write_doc(name: str, filename: str, text: str, hwm: float, backend: str | None = None, source_mode: str = "", source_digest: str = "") -> str:
-    path = project_dir(name) / filename
-    actual_backend = backend or SUMMARY_BACKEND
-    by = LOCAL_CHAT_MODEL if actual_backend == "local" else GEMINI_MODEL
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    body = (f"---\ngenerated_by: {by}\ngenerated_at: {now}\n"
-            + (f"source_mode: {source_mode}\n" if source_mode else "")
-            + (f"source_digest: {source_digest}\n" if source_digest else "")
-            + f"summarised_through: {hwm}\n---\n\n{text.strip()}\n")
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-    except OSError as e:
-        logger.error("cannot write %s: %s", path, e)
-        return f"vault not writable: {e}"
-    return ""
 
 
 def _extract_model_document(text: str, expected: str) -> str:
@@ -1120,25 +974,6 @@ def _extract_model_document(text: str, expected: str) -> str:
     return text
 
 
-def _select_ai_backend(input_tokens: int, source_docs: int = 1) -> str:
-    """Choose local Ollama for modest prompts; route large corpora to Gemini."""
-    requested = SUMMARY_BACKEND
-    if requested == "gemini":
-        return "gemini"
-    if requested != "local":
-        return requested
-    too_large = (input_tokens > LOCAL_AI_MAX_INPUT_TOKENS
-                 or source_docs > LOCAL_AI_MAX_SOURCE_DOCS)
-    if too_large:
-        if os.environ.get("GEMINI_API_KEY", "").strip():
-            logger.info("routing AI generation to Gemini: input_tokens=%s source_docs=%s "
-                        "(local limits tokens=%s docs=%s)",
-                        input_tokens, source_docs,
-                        LOCAL_AI_MAX_INPUT_TOKENS, LOCAL_AI_MAX_SOURCE_DOCS)
-            return "gemini"
-        logger.warning("AI input exceeds local routing limits but GEMINI_API_KEY is not set; "
-                       "falling back to local Ollama")
-    return "local"
 
 def _complete(system: str, user: str, validator, expected: str, *, local_model: str | None = None, num_ctx: int | None = None, timeout_s: int | None = None, think: bool | None = None, retry: bool = True, backend: str | None = None, max_output_tokens: int | None = None, response_details: dict | None = None, thinking_budget: int | None = None) -> str:
     """One generation with validation and a single corrective retry. Local Ollama defaults to think:false."""
@@ -1545,7 +1380,7 @@ def _render_units(selected, profile, target):
 
 
 def _adaptive_budget(input_tokens:int, profile="balanced", user_ceiling:int|None=None)->int:
-    """Scale context budget with source size; target is a ceiling, not a fixed fill target."""
+    """Scale the soft selection budget; protected facts may exceed it."""
     n=max(1,int(input_tokens))
     # Piecewise interpolation chosen for continuation contexts: retain a larger percentage
     # of short dense handoffs, then progressively less as source size grows.
@@ -1581,7 +1416,7 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
             if u["kind"] in ("code", "table") or _EXACT.search(u["text"]) or u["section"] in ("DONE", "REJECTED"):
                 u["hard"] = True
     budget=_adaptive_budget(input_tokens, profile, target_tokens)
-    emit(f"parsed files={len(documents)} units={len(units)} input_tokens~{input_tokens} adaptive_target={budget} ceiling={target_tokens}")
+    emit(f"parsed files={len(documents)} units={len(units)} input_tokens~{input_tokens} soft_target={budget} requested_soft_limit={target_tokens}")
 
     hard=[u for u in units if u["hard"]]
     chosen={u["order"]:u for u in hard}
@@ -1604,8 +1439,14 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
         result=_render_units(selected,profile,budget)
 
     hard_missing=[u["text"] for u in hard if u["text"] not in result]
-    emit(f"selected={len(selected)}/{len(units)} hard={len(hard)} corrections={correction_stats['corrections']} reconciled={correction_stats['reconciled_units']} missing_hard={len(hard_missing)} output_tokens~{_tok(result)} elapsed={time.monotonic()-t0:.2f}s")
+    protected_tokens = sum(u['tokens'] for u in hard)
+    output_tokens = _tok(result)
+    overflow = max(0, output_tokens - budget)
+    overflow_reason = ('protected-facts' if protected_tokens > budget else 'rendering-overhead') if overflow else None
+    emit(f"selected={len(selected)}/{len(units)} hard={len(hard)} protected_tokens~{protected_tokens} corrections={correction_stats['corrections']} reconciled={correction_stats['reconciled_units']} missing_hard={len(hard_missing)} output_tokens~{output_tokens} budget_overflow={overflow} overflow_reason={overflow_reason or 'none'} elapsed={time.monotonic()-t0:.2f}s")
     return {"context":result,"hard_facts":len(hard),"missing_hard":hard_missing,
+            "soft_target":budget,"protected_tokens":protected_tokens,"output_tokens":output_tokens,
+            "budget_overflow":overflow,"overflow_reason":overflow_reason,
             "units_total":len(units),"units_selected":len(selected),
             "corrections":correction_stats["corrections"],
             "corrections_reconciled":correction_stats["reconciled_units"],

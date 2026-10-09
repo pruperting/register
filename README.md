@@ -103,6 +103,9 @@ and understands plain CTX/2 markers, including DONE. Uploads/results are
 transient and do not alter the vault; copy or download the `.ctx` result.
 This general-purpose compressor selects facts under a soft budget. For a
 complete project's lossless chat copy, use its dedicated compact download.
+Compression logs distinguish `soft_target`, `protected_tokens`, `output_tokens`
+and `budget_overflow`. A `protected-facts` overflow means evidence was preserved
+rather than discarded to meet a soft target; it is not a hard-limit failure.
 
 ## Weekly Gemini estate review and Herald
 
@@ -114,6 +117,9 @@ inputs use section-aware selection that prioritises corrections, OPEN/NEXT,
 current state and completed work. It redacts the external payload and output.
 Reviews are saved to `projects/_estate/review-YYYY-MM-DD.md`, preserving separate
 weeks. An explicit rerun on the same date replaces that date's review.
+The review must contain all six requested sections with nonempty bodies. Empty,
+malformed or `MAX_TOKENS` responses leave the prior review intact; valid output
+is written atomically. There is no automatic second Gemini call on rejection.
 
 Projects without an accepted complete checkpoint are reported as excluded:
 bootstrap them once or save a conversation checkpoint before expecting them in
@@ -123,11 +129,28 @@ Review collection refreshes the derived views locally, including in dry-run.
 Daily 03:00 scans import checkpoints without AI calls. Herald's daily 06:15
 export remains, using content/ancestry-aware pending status rather than mtime
 watermarks. Existing first-run/daily-delta semantics remain intact.
+Herald tracks the accepted checkpoint ID, so preserved file times or same-second
+imports cannot hide changes to STATE/DONE. OPEN/NEXT extraction ignores fenced
+code, including CTX labels inside backtick or tilde fences.
 
 ```bash
 docker compose exec -T register python /app/synthesise.py --vault /vault --dry-run
 docker compose exec -T register python /app/synthesise.py --vault /vault
 ```
+
+The second command makes one Gemini review request and writes today's review.
+To inspect the next Herald delta without consuming its daily comparison baseline:
+
+```bash
+docker compose exec -T register python /app/export-herald-status.py --stdout
+```
+
+Normal scheduled export still writes `projects/_estate/herald-status.json` at
+06:15. Preview does not advance that baseline or make an AI call. The test suite
+covers first-export baseline, unchanged repeat, state-only checkpoint change,
+new OPEN normalization, archival exclusion, review validation/redaction and the
+review file being detected by Herald. Server review execution and Herald's
+external collector/07:00 brief still require observing the deployed services.
 
 Check for older host crontab entries that invoke synthesis monthly; disable
 those duplicate entries if present. The in-app scheduler now runs weekly.

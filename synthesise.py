@@ -19,7 +19,7 @@ picks up as a file under the _estate project.
   ./synthesise.py --stdout             # print instead of writing
 
 Needs GEMINI_API_KEY in the environment.
-Cron:  0 4 * * 0  docker exec register python /app/synthesise.py --vault /vault
+Scheduled by app.py through APScheduler; no host cron is required.
 """
 import argparse
 import os
@@ -84,8 +84,8 @@ Rules:
 - Only use what the documents state. Where something is unclear, say so
   rather than inferring.
 - Explicit CORRECTIONS are authoritative. Apply CURRENT values and never treat
-  PREVIOUS values as live project state. If a newer deterministic delta corrects
-  the canonical checkpoint, the newer correction wins.
+  PREVIOUS values as live project state. Each supplied checkpoint is already
+  reconciled by its conversation; raw historical deltas are not supplied.
 - Be specific and unsentimental. Vague encouragement is worthless here.
 - Do not summarise each project in turn — that already exists. Only say
   things that require seeing the whole estate at once.
@@ -300,13 +300,7 @@ def _redact_for_external_ai(text: str) -> tuple[str, dict[str, int]]:
 
 
 def collect(vault: Path) -> tuple[str, list[str]]:
-    """Collect canonical CTX/2 plus deterministically compressed unsynced deltas.
-
-    The weekly AI never receives raw handoff documents. Existing canonical
-    contexts are primary; any handoffs newer than context_through are compacted
-    deterministically before inclusion so synthesis remains safe even if the
-    daily refresh has not run yet.
-    """
+    """Publish/import and collect only accepted complete checkpoints for review."""
     projects_dir = vault / "projects"
     if not projects_dir.exists():
         sys.exit(f"no projects directory under {vault}")
@@ -351,6 +345,29 @@ def collect(vault: Path) -> tuple[str, list[str]]:
     return "".join(blocks), included
 
 
+REVIEW_SECTIONS = (
+    'Where your attention actually went', 'Stalled',
+    'Overlapping or duplicated effort', 'Recurring problems',
+    'Candidates to kill', 'Do these three things next',
+)
+
+
+def _review_text(response):
+    """Refuse incomplete model output before replacing a dated review."""
+    candidates = response.candidates or []
+    finish = candidates[0].finish_reason if candidates else None
+    if getattr(finish, 'value', finish) == 'MAX_TOKENS':
+        raise ValueError('Gemini truncated the weekly review; previous review retained')
+    text = (response.text or '').strip()
+    headings = re.findall(r'(?m)^##\s+(.+?)\s*$', text)
+    if tuple(headings) != REVIEW_SECTIONS:
+        raise ValueError('weekly review must contain all six requested sections once, in order; previous review retained')
+    parts = re.split(r'(?m)^##\s+.+?\s*$', text)[1:]
+    if any(not part.strip() for part in parts):
+        raise ValueError('weekly review contains an empty section; previous review retained')
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vault", default=os.environ.get("VAULT_PATH", DEFAULT_VAULT))
@@ -390,9 +407,10 @@ def main():
     client = genai.Client(api_key=key)
     resp = client.models.generate_content(model=MODEL,
                                           contents=PROMPT + material)
-    text = (resp.text or "").strip()
-    if not text:
-        sys.exit("empty response from model")
+    try:
+        text = _review_text(resp)
+    except ValueError as e:
+        sys.exit(str(e))
 
     text, _ = _redact_for_external_ai(text)
 
@@ -408,7 +426,8 @@ def main():
 
     out = vault / "projects" / "_estate" / f"review-{date.today():%Y-%m-%d}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(header + text + "\n", encoding="utf-8")
+    import register
+    register._atomic_write(out, header + text + "\n")
     print(f"written: {out}", file=sys.stderr)
 
 
