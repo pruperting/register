@@ -189,6 +189,38 @@ def test_bootstrap_missing_key_and_bad_output_create_no_checkpoint(project,monke
     assert len(list((project/'handoffs').glob('*.md')))==1
 
 
+def test_bootstrap_ignores_echoed_ancestry_but_preserves_all_evidence(project, monkeypatch):
+    legacy(project); monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    parent = cp.identity('Demo')
+    original = body().replace('host /srv/demo.', 'Project: Demo\nPrior checkpoint ID: technical literal inside FACTS')
+    echoed = original.replace('CTX/2\n', 'CTX/2\nProject: Demo\nPrior checkpoint ID: legacy:incorrect-model-echo\n', 1)
+    def complete(system, prompt, validator, expected, **kwargs):
+        assert validator(echoed)
+        return echoed
+    monkeypatch.setattr(reg, '_complete', complete)
+    result = reg.consolidate_handoffs('Demo')
+    assert result['status'] == 'generated' and result['ai_calls'] == 1
+    meta, saved = reg._read(reg.VAULT_PATH / result['path'])
+    assert meta['based_on'] == parent
+    assert saved == original
+    # Conversation-authored checkpoints still require the exact strict format.
+    with pytest.raises(ValueError, match='unexpected text'):
+        cp.split_context(echoed.split('## AI checkpoint\n')[1])
+
+
+@pytest.mark.parametrize('preamble', ['Project: Other', 'Unclassified evidence must survive'])
+def test_bootstrap_preamble_does_not_hide_wrong_project_or_arbitrary_text(project, monkeypatch, preamble):
+    legacy(project); monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    value = body().replace('CTX/2\n', 'CTX/2\n' + preamble + '\n', 1)
+    def complete(system, prompt, validator, expected, **kwargs):
+        assert not validator(value)
+        raise RuntimeError('invalid output')
+    monkeypatch.setattr(reg, '_complete', complete)
+    result = reg.consolidate_handoffs('Demo')
+    assert result['status'] == 'error'
+    assert len(list((project / 'handoffs').glob('*.md'))) == 1
+
+
 def test_rejected_gemini_output_has_precise_redacted_diagnostics(project,monkeypatch):
     from types import SimpleNamespace
     from google import genai

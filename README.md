@@ -126,6 +126,12 @@ bootstrap them once or save a conversation checkpoint before expecting them in
 the review. The review suggests priorities; it does not modify project truth.
 Review collection refreshes the derived views locally, including in dry-run.
 
+Gemini bootstrap may echo `Project:` and `Prior checkpoint ID:` before `GOAL`.
+Only those transport fields are removed: the project must match, and ancestry
+comes from Register's recorded source identity, checked again before publishing.
+Other unexpected preamble content remains an error; conversation imports retain
+their strict format.
+
 Daily 03:00 scans import checkpoints without AI calls. Herald's daily 06:15
 export remains, using content/ancestry-aware pending status rather than mtime
 watermarks. Existing first-run/daily-delta semantics remain intact.
