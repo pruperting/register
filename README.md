@@ -37,6 +37,9 @@ records verified completions; OPEN/NEXT retain unresolved/future work. A
 proposal is never automatically marked complete. An empty section contains `-`.
 Human summary and AI context come from the same immutable handoff; Register
 checks structure and ancestry, not semantic factual correctness.
+The human summary describes the project's purpose, main capabilities and overall
+state first, then recent progress, outstanding issues and next steps. It should
+remain useful to someone unfamiliar with the project after each new handoff.
 
 ## Checkpoint format and conflicts
 
@@ -55,7 +58,7 @@ project_status: building
 ---
 
 ## Human summary
-Brief readable project status and next actions.
+Project overview and overall state, followed by recent progress and next actions.
 
 ## AI checkpoint
 CTX/2

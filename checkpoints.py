@@ -324,7 +324,11 @@ continuation-critical facts; target about {budget["target_tokens"]} estimated to
 hard maximum {budget["ceiling_tokens"]} (absolute ceiling 15000). Do not invent facts.
 Output exactly this body, without outer fences or YAML:
 ## Human summary
-Brief Markdown overview, where it stands and next actions, at most 150 words.
+At most 150 words in two short paragraphs. First, explain what the project is,
+who or what it serves, the problem it solves, its main capabilities and overall
+current state; make it self-contained for a reader unfamiliar with the project.
+Second, describe the latest verified progress, outstanding issues and next steps.
+Preserve the overall project description; do not write only a recent-change log.
 ## AI checkpoint
 CTX/2
 {chr(10).join(s + chr(10) + '-' for s in SECTIONS)}

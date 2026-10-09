@@ -51,9 +51,20 @@ Then output exactly these two Markdown H2 headings, in this order:
 ## Human summary
 
 A brief, readable Markdown summary (roughly 150–300 words, less for a small
-project). Explain purpose, current implemented state, verified completed work,
-important decisions, outstanding issues and immediate next actions. Preserve
-uncertainty. Do not claim a local commit was pushed or deployed without evidence.
+project) with two short paragraphs:
+
+1. **Project overview:** explain what the project is, who or what it serves,
+   the problem it solves, its main capabilities and its overall current state.
+   Make this self-contained for someone who has never seen the project. Retain
+   its still-valid purpose and capabilities from the prior checkpoint even when
+   this conversation focused on a small fix; do not replace the overview with
+   a release note or a list of this session's changes.
+2. **Recent progress and next steps:** explain the latest meaningful changes,
+   verified completed work, outstanding issues and immediate next actions.
+   Distinguish recent progress from the project's overall description.
+
+Use plain language and mention important decisions where they help explain the
+project. Preserve uncertainty. Do not claim a local commit was pushed or deployed without evidence.
 This is the summary Register displays in its UI; it must agree with CTX/2.
 
 ## AI checkpoint
