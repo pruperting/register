@@ -157,6 +157,71 @@ def test_bootstrap_required_never_calls_ai(project):
     assert reg.generate_context('Demo')['migration_required']
 
 
+def test_nightly_scan_repairs_missing_views_and_imports_new_head_without_ai(project):
+    first = snapshot(project)
+    assert cp.nightly_refresh()['published'] == 1
+    (project / reg.summary_name('Demo')).unlink()
+    assert cp.nightly_refresh()['published'] == 1
+    assert reg.summary_info('Demo')['has_summary']
+    (project / reg.context_name('Demo')).unlink()
+    assert cp.nightly_refresh()['published'] == 1
+    second = snapshot(project, 'two.md', parent=first, content=body(state='CURRENT deployed.'))
+    assert cp.nightly_refresh()['published'] == 1
+    assert reg.context_info('Demo')['context_source_digest'] == second
+    assert cp.nightly_refresh()['fresh'] == 1
+
+
+def test_nightly_bootstrap_failure_not_repeated_until_evidence_changes(project, monkeypatch):
+    path = legacy(project); monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    calls = []
+    def complete(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError('temporary Gemini failure')
+    monkeypatch.setattr(reg, '_complete', complete)
+    assert cp.nightly_refresh()['bootstrap_failed'] == 1
+    assert cp.nightly_refresh()['deferred'] == 1
+    assert len(calls) == 1
+    path.write_text(path.read_text() + '\nA new verified fact.\n')
+    assert cp.nightly_refresh()['bootstrap_failed'] == 1
+    assert len(calls) == 2
+
+
+def test_nightly_reference_bootstrap_limit_and_archived_exclusion(project, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    (project / 'reference.md').write_text('---\nproject: Demo\n---\nA demo reference.\n')
+    other = reg.VAULT_PATH / 'projects' / 'Other'
+    (other / 'handoffs').mkdir(parents=True)
+    (other / '_project.md').write_text('---\nstatus: building\n---\n')
+    (other / 'reference.md').write_text('---\nproject: Other\n---\nOther reference.\n')
+    archive = reg.VAULT_PATH / 'projects' / 'archive' / 'Archived'
+    archive.mkdir(parents=True)
+    (archive / '_project.md').write_text('---\nstatus: building\narchived: true\n---\n')
+    calls = []
+    def complete(system, prompt, validator, expected, **kwargs):
+        calls.append(prompt)
+        assert validator(body())
+        return body()
+    monkeypatch.setattr(reg, '_complete', complete)
+    assert cp.nightly_refresh(max_bootstraps=0)['bootstrap_attempts'] == 0
+    assert cp.nightly_refresh(auto_bootstrap=False)['bootstrap_attempts'] == 0
+    counts = cp.nightly_refresh(max_bootstraps=1)
+    assert counts['published'] == 1 and counts['bootstrap_attempts'] == 1
+    assert counts['deferred'] == 1 and len(calls) == 1
+    assert 'Project: Demo' in calls[0]
+    counts = cp.nightly_refresh(max_bootstraps=1)
+    assert counts['fresh'] == 1 and counts['bootstrap_attempts'] == 1
+    assert len(calls) == 2 and 'Project: Other' in calls[1]
+
+
+def test_nightly_conflict_is_not_bootstrapped(project, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    first = snapshot(project)
+    snapshot(project, 'two.md', parent=first)
+    snapshot(project, 'three.md', parent=first, content=body(state='CURRENT competing change.'))
+    counts = cp.nightly_refresh()
+    assert counts['errors'] == 1 and counts['bootstrap_attempts'] == 0
+
+
 def test_explicit_gemini_bootstrap_redacts_and_only_runs_once(project,monkeypatch):
     legacy(project)
     old=project/'handoffs'/'legacy.md'

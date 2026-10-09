@@ -11,8 +11,9 @@ Your Syncthing/Obsidian vault is the only datastore. Projects are folders under
    Gemini**. Existing handoffs are deterministically compressed in chronological
    batches, with task/correction/technical anchors protected and credentials
    redacted. Gemini reconciles them into one complete checkpoint. Projects with
-   reference files only use the explicit reference bootstrap. There is no
-   automatic AI call on page load or routine refresh.
+   reference files only can also be seeded. The nightly scan automatically
+   bootstraps missing checkpoints with material, within its run limit. Page
+   loads and ordinary import buttons never make automatic AI calls.
 2. **Start a conversation.** Download the full context or compact chat copy.
    Both include `CHECKPOINT_ID` and CTX/2. The compact copy uses the deterministic
    Markdown parser, preserves every checkpoint item and command/code block, and
@@ -132,7 +133,15 @@ comes from Register's recorded source identity, checked again before publishing.
 Other unexpected preamble content remains an error; conversation imports retain
 their strict format.
 
-Daily 03:00 scans import checkpoints without AI calls. Herald's daily 06:15
+Daily 03:00 scans import new checkpoints and repair missing CTX/summary views
+without AI calls. Missing initial checkpoints are seeded with Gemini from legacy
+handoffs, or from references when no handoffs exist. Archived projects and empty
+projects are skipped. `NIGHTLY_BOOTSTRAP=true` enables this by default;
+`NIGHTLY_BOOTSTRAP_MAX=5` limits attempts per night. Failed or interrupted attempts
+against unchanged evidence/model are recorded and not automatically repeated:
+retry explicitly in the UI after addressing the reported problem, or supply new
+evidence. Invalid/conflicting checkpoints are reported rather than overwritten.
+Herald's daily 06:15
 export remains, using content/ancestry-aware pending status rather than mtime
 watermarks. Existing first-run/daily-delta semantics remain intact.
 Herald tracks the accepted checkpoint ID, so preserved file times or same-second

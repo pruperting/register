@@ -8,7 +8,8 @@ already cover the vault), and the app starts instantly.
 
 Complete handoff snapshots are reconciled by the conversation AI. Register
 validates/imports them and displays their human summary without further AI
-calls. Gemini is reserved for explicit bootstrap and the weekly estate review.
+calls. Gemini seeds missing checkpoints (explicitly or in the nightly scan)
+and performs the weekly estate review.
 """
 import hashlib
 import json

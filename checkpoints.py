@@ -285,6 +285,76 @@ def pending(p):
         return True
 
 
+def nightly_refresh(max_bootstraps=5, auto_bootstrap=True):
+    """Repair/import every live project and seed missing snapshots once.
+
+    Record an attempt before calling Gemini so unchanged failed evidence cannot
+    incur another paid request each night. Explicit UI bootstrap remains retryable.
+    """
+    reg = _reg(); reg.invalidate()
+    counts = {'published': 0, 'fresh': 0, 'bootstrap_attempts': 0,
+              'bootstrap_failed': 0, 'deferred': 0, 'errors': 0}
+    for p in sorted(reg.project_list(), key=lambda item: item['name']):
+        if p['archived']:
+            continue
+        name = p['name']
+        try:
+            result = publish(name)
+            if result['status'] in ('generated', 'fresh'):
+                counts['published' if result['status'] == 'generated' else 'fresh'] += 1
+            elif result['status'] == 'bootstrap-required':
+                references = not p.get('handoffs')
+                if references:
+                    docs = []
+                    for f in reg.reference_files(p):
+                        parsed = reg._read(reg.VAULT_PATH / f['path'])
+                        if parsed and parsed[1].strip():
+                            docs.append((f['path'], parsed[1]))
+                else:
+                    docs, _ = reg._all_material(p)
+                if (not docs or not auto_bootstrap
+                        or not reg.os.environ.get('GEMINI_API_KEY', '').strip()
+                        or counts['bootstrap_attempts'] >= max(0, max_bootstraps)):
+                    counts['deferred'] += 1
+                    reg.logger.info('nightly bootstrap deferred project=%s (no material/key, disabled, or run limit)', name)
+                    continue
+                with _publish_lock:
+                    seed = identity(name)
+                    fingerprint = hashlib.sha256(json.dumps(
+                        [1, seed, docs, reg.GEMINI_MODEL], sort_keys=True).encode()).hexdigest()
+                    attempt_path = reg.project_dir(name) / 'checkpoint-nightly-bootstrap.json'
+                    previous = json.loads(attempt_path.read_text()) if attempt_path.exists() else {}
+                    if previous.get('fingerprint') == fingerprint:
+                        counts['deferred'] += 1
+                        reg.logger.info('nightly bootstrap deferred project=%s: unchanged prior attempt; retry explicitly', name)
+                        continue
+                    attempt = {'fingerprint': fingerprint, 'attempted_at': datetime.now(timezone.utc).isoformat(),
+                               'status': 'attempting'}
+                    reg._atomic_write(attempt_path, json.dumps(attempt, indent=2) + '\n')
+                counts['bootstrap_attempts'] += 1
+                try:
+                    result = bootstrap(name, references=references)
+                except Exception:
+                    reg.logger.exception('nightly bootstrap failed project=%s', name)
+                    result = {'status': 'error', 'reason': 'bootstrap raised an exception; see logs'}
+                attempt['status'] = result['status']
+                reg._atomic_write(attempt_path, json.dumps(attempt, indent=2) + '\n')
+                if result['status'] == 'generated':
+                    counts['published'] += 1
+                elif result['status'] == 'fresh':
+                    counts['fresh'] += 1
+                else:
+                    counts['bootstrap_failed'] += 1
+            else:
+                counts['errors'] += 1
+            reg.logger.info('nightly checkpoint project=%s status=%s reason=%s',
+                            name, result['status'], result.get('reason', ''))
+        except Exception:
+            counts['errors'] += 1
+            reg.logger.exception('nightly checkpoint scan failed project=%s', name)
+    return counts
+
+
 def _bootstrap_budget(evidence_tokens, source_docs):
     """Keep a compact target, with enough headroom for a complete snapshot.
 

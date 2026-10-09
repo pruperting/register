@@ -404,22 +404,14 @@ def api_stats():
 
 
 # ── scheduled refresh ───────────────────────────────────────────────
-# Routine scans only validate/publish synced conversation checkpoints. No AI.
+# Import/repair checkpoints; bounded one-time Gemini bootstrap for missing heads.
 
 
 def scheduled_refresh():
-    register.invalidate()
-    done = 0
-    for p in register.project_list():
-        if p["archived"] or not p["handoff_count"]:
-            continue
-        try:
-            res = register.refresh_project(p["name"])
-            logger.info("checkpoint import %s → %s %s", p["name"], res.get("status"), res.get("reason", ""))
-            done += res.get("status") == "generated"
-        except Exception:
-            logger.exception("checkpoint import failed for %s", p["name"])
-    logger.info("checkpoint scan complete: %d published; no AI calls", done)
+    result = checkpoints.nightly_refresh(
+        max_bootstraps=int(os.environ.get('NIGHTLY_BOOTSTRAP_MAX', '5')),
+        auto_bootstrap=_enabled('NIGHTLY_BOOTSTRAP'))
+    logger.info("nightly checkpoint scan complete: %s", json.dumps(result))
 
 
 def scheduled_synthesis():
@@ -461,7 +453,8 @@ if _enabled("AUTO_SUMMARY", os.environ.get("WEEKLY_REFRESH", "true")):
     _sched.add_job(scheduled_refresh, "cron", hour=_hour, minute=0,
                    id="auto_summary", coalesce=True, max_instances=1)
     _sched_jobs += 1
-    logger.info("checkpoint scan scheduled (daily %02d:00; no AI)", _hour)
+    logger.info("checkpoint scan scheduled (daily %02d:00; missing bootstrap=%s, max %s Gemini attempts)",
+                _hour, _enabled('NIGHTLY_BOOTSTRAP'), os.environ.get('NIGHTLY_BOOTSTRAP_MAX', '5'))
 
 if _enabled("WEEKLY_SYNTHESIS", os.environ.get("MONTHLY_SYNTHESIS", "true")):
     _syn_hour = int(os.environ.get("WEEKLY_SYNTHESIS_HOUR", "4"))
@@ -483,5 +476,5 @@ if _enabled("HERALD_STATUS_EXPORT", "true"):
 if _sched_jobs:
     _sched.start()
 
-logger.info("register ready: vault=%s checkpoints=conversation-authored; routine AI calls=0",
+logger.info("register ready: vault=%s checkpoints=conversation-authored; imports use no AI; missing checkpoints may bootstrap nightly",
             register.VAULT_PATH)
