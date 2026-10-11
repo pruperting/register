@@ -130,6 +130,9 @@ def context_overlay(name, checkpoint, data=None):
     pending = project_inbox(name, data)
     if not pending:
         return checkpoint
+    if checkpoint.startswith("CHECKPOINT_ID "):
+        first, separator, rest = checkpoint.partition("\n")
+        return first + separator + pending + "\n--- ACCEPTED IMMUTABLE CHECKPOINT BELOW ---\n" + rest
     return pending + "\n--- ACCEPTED IMMUTABLE CHECKPOINT BELOW ---\n" + checkpoint
 
 
