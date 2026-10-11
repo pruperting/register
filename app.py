@@ -18,6 +18,7 @@ import register
 import herald_status
 import checkpoints
 import obsidian_tasks
+import project_search
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -127,6 +128,19 @@ def api_tasks():
 @app.route("/api/obsidian/project-index")
 def api_obsidian_project_index():
     return Response(obsidian_tasks.project_index(), mimetype="text/markdown")
+
+
+@app.route("/search")
+def search_page():
+    query = request.args.get("q", "")
+    results = project_search.search(query)
+    return render_template("search.html", query=query, results=results)
+
+
+@app.route("/api/search")
+def api_search():
+    query = request.args.get("q", "")
+    return jsonify({"query": query, "results": project_search.search(query)})
 
 
 @app.route("/review")
