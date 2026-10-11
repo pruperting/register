@@ -116,6 +116,7 @@ def index():
 
 @app.route("/tasks")
 def tasks_page():
+    obsidian_tasks.sync_project_notes()
     return render_template("tasks.html", data=obsidian_tasks.dashboard())
 
 
@@ -126,7 +127,23 @@ def api_tasks():
 
 @app.route("/api/obsidian/project-index")
 def api_obsidian_project_index():
+    obsidian_tasks.sync_project_notes()
     return Response(obsidian_tasks.project_index(), mimetype="text/markdown")
+
+
+@app.route("/review")
+def review_page():
+    root = register.VAULT_PATH / "projects" / "_estate"
+    reviews = sorted(root.glob("review-????-??-??.md"), reverse=True) if root.is_dir() else []
+    latest = reviews[0] if reviews else None
+    text = ""
+    if latest:
+        try:
+            text = latest.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            text = "(Could not read latest review)"
+    return render_template("review.html", latest=latest, review_text=text,
+                           review_files=[p.name for p in reviews[:30]])
 
 
 @app.route("/archive")
@@ -429,6 +446,10 @@ def scheduled_refresh():
         max_bootstraps=int(os.environ.get('NIGHTLY_BOOTSTRAP_MAX', '5')),
         auto_bootstrap=_enabled('NIGHTLY_BOOTSTRAP'))
     logger.info("nightly checkpoint scan complete: %s", json.dumps(result))
+    try:
+        logger.info("Obsidian project index sync: %s", obsidian_tasks.sync_project_notes())
+    except OSError:
+        logger.exception("Obsidian project index sync failed")
 
 
 def scheduled_synthesis():
@@ -448,6 +469,13 @@ def scheduled_synthesis():
         logger.error("weekly synthesis exited %d", proc.returncode)
     else:
         logger.info("weekly synthesis complete")
+
+
+def scheduled_project_index():
+    try:
+        logger.info("Obsidian project index sync: %s", obsidian_tasks.sync_project_notes())
+    except OSError:
+        logger.exception("Obsidian project index sync failed")
 
 
 def scheduled_herald_export():
@@ -490,8 +518,15 @@ if _enabled("HERALD_STATUS_EXPORT", "true"):
     logger.info("Herald status export scheduled (daily %02d:%02d)",
                 _hs_hour, _hs_minute)
 
+_sched.add_job(scheduled_project_index, "interval", minutes=15,
+               id="obsidian_index", coalesce=True, max_instances=1)
+_sched_jobs += 1
 if _sched_jobs:
     _sched.start()
+try:
+    scheduled_project_index()
+except Exception:
+    logger.exception("Initial Obsidian index sync failed")
 
 logger.info("register ready: vault=%s checkpoints=conversation-authored; imports use no AI; missing checkpoints may bootstrap nightly",
             register.VAULT_PATH)
