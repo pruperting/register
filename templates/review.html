@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}weekly review · project register{% endblock %}
+{% block content %}
+<h1>weekly Gemini review</h1>
+<p class="hint">Reviews are created each Sunday at 04:00 and saved in <code>projects/_estate/review-YYYY-MM-DD.md</code>.</p>
+{% if latest %}
+  <p class="dim">Latest: {{ latest.name }}</p>
+  <section class="panel">{{ review_text | markdown | safe }}</section>
+  {% if review_files|length > 1 %}
+    <details><summary>Previous reviews</summary><ul>
+    {% for filename in review_files[1:] %}<li>{{ filename }}</li>{% endfor %}
+    </ul></details>
+  {% endif %}
+{% else %}
+  <section class="panel"><p>No dated Gemini review has been saved yet.</p></section>
+{% endif %}
+{% endblock %}
