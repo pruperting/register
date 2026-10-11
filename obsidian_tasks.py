@@ -226,5 +226,5 @@ if (choice) tR += "### [[" + choice + "]]\\n- [ ] ";
 
 def sync_project_notes():
     """Update only Register-owned documents, never overwrite user notes."""
-    return {"index": _managed_write(INDEX_FILE, MANAGED_MARKER + "\\n" + project_index()),
+    return {"index": _managed_write(INDEX_FILE, MANAGED_MARKER + "\n" + project_index()),
             "template": _managed_write(TEMPLATE_FILE, daily_template())}
