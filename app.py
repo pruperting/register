@@ -116,7 +116,6 @@ def index():
 
 @app.route("/tasks")
 def tasks_page():
-    obsidian_tasks.sync_project_notes()
     return render_template("tasks.html", data=obsidian_tasks.dashboard())
 
 
@@ -127,7 +126,6 @@ def api_tasks():
 
 @app.route("/api/obsidian/project-index")
 def api_obsidian_project_index():
-    obsidian_tasks.sync_project_notes()
     return Response(obsidian_tasks.project_index(), mimetype="text/markdown")
 
 
@@ -446,10 +444,6 @@ def scheduled_refresh():
         max_bootstraps=int(os.environ.get('NIGHTLY_BOOTSTRAP_MAX', '5')),
         auto_bootstrap=_enabled('NIGHTLY_BOOTSTRAP'))
     logger.info("nightly checkpoint scan complete: %s", json.dumps(result))
-    try:
-        logger.info("Obsidian project index sync: %s", obsidian_tasks.sync_project_notes())
-    except OSError:
-        logger.exception("Obsidian project index sync failed")
 
 
 def scheduled_synthesis():
@@ -518,7 +512,7 @@ if _enabled("HERALD_STATUS_EXPORT", "true"):
     logger.info("Herald status export scheduled (daily %02d:%02d)",
                 _hs_hour, _hs_minute)
 
-_sched.add_job(scheduled_project_index, "interval", minutes=15,
+_sched.add_job(scheduled_project_index, "cron", hour="6,18", minute=0,
                id="obsidian_index", coalesce=True, max_instances=1)
 _sched_jobs += 1
 if _sched_jobs:
