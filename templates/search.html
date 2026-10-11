@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}search · project register{% endblock %}
+{% block content %}
+<h1>search project files</h1>
+<p>Search words or exact phrases across Markdown and text files in active Register project folders. Results show the project, file, line and matching context.</p>
+<form action="{{ url_for('search_page') }}" method="get" style="display:flex;gap:.5rem;margin:1rem 0">
+  <input type="search" name="q" value="{{ query }}" maxlength="120" placeholder="Word or phrase" aria-label="Search project files" style="flex:1;min-width:0" required>
+  <button type="submit">search</button>
+</form>
+{% if query %}
+  <p>{{ results|length }} matching locations{% if results|length >= 100 %} (first 100 only){% endif %} for <strong>{{ query }}</strong></p>
+  {% for item in results %}
+    {% if loop.first or item.project != results[loop.index0-1].project %}
+      <h2>{{ item.project }}</h2>
+    {% endif %}
+    <div style="margin:0 0 1rem;padding:.75rem;border:1px solid var(--border, #777);border-radius:.5rem">
+      <div><a href="{{ obsidian_uri(item.file) }}">{{ item.file }}</a> · line {{ item.line }}</div>
+      <div style="margin-top:.4rem;overflow-wrap:anywhere">{{ item.before }} <mark>{{ item.match }}</mark> {{ item.after }}</div>
+    </div>
+  {% else %}
+    <p>No matches found in active project text files.</p>
+  {% endfor %}
+{% endif %}
+{% endblock %}
