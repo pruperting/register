@@ -46,7 +46,7 @@ The `/api/context/<Project>` full and compact copies and the project-specific ha
 
 Register automatically creates and keeps these two managed files in the root of your mounted Obsidian vault:
 
-- `Register Project Index.md`: exact active project links, updated on startup, every fifteen minutes and during nightly refresh
+- `Register Project Index.md`: exact active project links, updated at container startup and twice daily at 06:00 and 18:00 Europe/London
 - `Register Daily Template.md`: a simple daily note with a **Templater** picker that reads the index and inserts the exact selected project heading
 
 These are the only auto-managed files. Existing files of these names **without** the `register-managed` ownership marker are never overwritten. See the Register logs for `blocked` if you already have a conflicting filename.
