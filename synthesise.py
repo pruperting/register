@@ -22,6 +22,7 @@ Needs GEMINI_API_KEY in the environment.
 Scheduled by app.py through APScheduler; no host cron is required.
 """
 import argparse
+import obsidian_tasks
 import os
 import re
 import sys
@@ -325,6 +326,9 @@ def collect(vault: Path) -> tuple[str, list[str]]:
                 continue
             info = reg.context_info(p["name"])
             parts = ["ACCEPTED COMPLETE CHECKPOINT (CTX/2):\n" + info["context"]]
+            pending = obsidian_tasks.project_inbox(p["name"])
+            if pending:
+                parts.insert(0, pending[:12000])
             if len(parts[0]) > PER_PROJECT_CHARS:
                 parts = [_portfolio_clip(parts, PER_PROJECT_CHARS)]
                 trimmed.append(p["name"])
