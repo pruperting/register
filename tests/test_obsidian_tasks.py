@@ -56,12 +56,11 @@ def test_generated_index_is_safe_and_idempotent(tmp_path, monkeypatch):
     ])
     # Actual atomic writer is used: no model or external service.
     first = obsidian_tasks.sync_project_notes()
-    assert first == {"index": "updated", "template": "updated"}
+    assert first == {"index": "updated"}
     index = (tmp_path / obsidian_tasks.INDEX_FILE).read_text()
     assert "[[Register]]" in index and "[[Herald]]" in index
     assert "[[Old]]" not in index
-    assert "tp.system.suggester" in (tmp_path / obsidian_tasks.TEMPLATE_FILE).read_text()
-    assert obsidian_tasks.sync_project_notes() == {"index": "unchanged", "template": "unchanged"}
+    assert obsidian_tasks.sync_project_notes() == {"index": "unchanged"}
     (tmp_path / obsidian_tasks.INDEX_FILE).write_text("# My own project index")
     assert obsidian_tasks.sync_project_notes()["index"] == "blocked"
     assert (tmp_path / obsidian_tasks.INDEX_FILE).read_text() == "# My own project index"
