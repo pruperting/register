@@ -29,10 +29,18 @@ import checkpoints
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+# v2: OPEN is diffed on the full list (via open_ids), items are reduced to short
+# headlines, sub-heading bullets are dropped, and a per-project `summary` is
+# published for display. A v1 file is not a valid baseline, so the first v2 run
+# is a baseline run (no "new OPEN" flood from the old 12-item cap).
+SCHEMA_VERSION = 2
 ESTATE_DIR = register.VAULT_PATH / register.PROJECTS_DIR / "_estate"
 DEFAULT_OUTPUT = ESTATE_DIR / "herald-status.json"
-MAX_SECTION_ITEMS = 12
+MAX_SECTION_ITEMS = 12          # items shown per section (display only)
+MAX_SCAN_ITEMS = 500            # items read per section for diffing
+SHORT_ITEM_CHARS = 50  # items this short are shown whole
+MAX_SUMMARY_PROJECTS = 8
+HEADLINE_CHARS = 80
 
 # CTX/2 top-level section markers. Keep this list in sync with Register's
 # deterministic context format; unknown future sections safely end the current
@@ -56,6 +64,36 @@ def _norm(text: str) -> str:
 def _item_id(project: str, text: str) -> str:
     raw = f"{project}\0{_norm(text)}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _is_subheading(text: str) -> bool:
+    """A bullet that only labels the bullets after it, e.g. 'Open:'."""
+    return text.endswith(":") and len(text) <= 60 and "`" not in text
+
+
+def _headline(text: str, limit: int = HEADLINE_CHARS) -> str:
+    """Reduce a CTX item to a short, readable headline.
+
+    'Verify Garden Beacon: Confirm `/api/garden` is ce08. Repoint ...'
+        -> 'Verify Garden Beacon'
+    Otherwise the first sentence, with Markdown backticks removed, capped.
+    """
+    s = re.sub(r"\s+", " ", (text or "").replace("`", "")).strip()
+    first = re.split(r"(?<=[^.\d][.;])\s", s, maxsplit=1)[0]
+    m = re.match(r"^(.{3,60}?):\s+\S", s)
+    if m and (
+        len(first) <= SHORT_ITEM_CHARS  # short enough to keep whole
+        # "On the Pi: run X" - the bit before the colon is a place, not the task.
+        or re.match(r"(?i)(on|in|at|from|for|with|after|before|via|when|if|then)\b", m.group(1))
+        # "TODO T-4: inspect logs" - a tag or ticket id, not a summary.
+        or re.search(r"(?i)^(todo|fixme|note|bug)\b|\b[A-Z]+-\d+\b", m.group(1))
+    ):
+        m = None
+    s = m.group(1) if m else first
+    s = s.rstrip(" .;:")
+    if len(s) > limit:
+        s = s[: limit - 1].rstrip() + "…"
+    return s
 
 
 def _section_lines(context: str, wanted: str) -> list[str]:
@@ -96,7 +134,9 @@ def _section_items(context: str, wanted: str, limit: int = MAX_SECTION_ITEMS) ->
         nonlocal current
         if current:
             cleaned = re.sub(r"\s+", " ", current).strip()
-            if cleaned and cleaned != "-":
+            # "- Suggested but not acted on:" / "- Open:" are sub-headings
+            # inside a section, not items.
+            if cleaned and cleaned != "-" and not _is_subheading(cleaned):
                 items.append(cleaned)
         current = None
 
@@ -149,13 +189,17 @@ def _project_payload(p: dict[str, Any]) -> dict[str, Any]:
     context_through = float(p.get("context_through", 0.0) or 0.0)
     summary_through = float(p.get("summarised_through", 0.0) or 0.0)
     context = str(p.get("context") or "")
-    opens = _section_items(context, "OPEN")
+    all_opens = _section_items(context, "OPEN", limit=MAX_SCAN_ITEMS)
+    opens = all_opens[:MAX_SECTION_ITEMS]
     nexts = _section_items(context, "NEXT")
 
     return {
         "name": p["name"],
         "checkpoint_id": (p.get("context_source_digest") or None)
                          if p.get("context_source_mode") == "conversation-checkpoint" else None,
+        "open_ids": sorted({_item_id(p["name"], x) for x in all_opens}),
+        "open_total": len(all_opens),
+        "_open_full": all_opens,  # build-time only; stripped before writing
         "status": p.get("status") or "unset",
         "last_activity_at": _iso(float(p.get("mtime", 0.0) or 0.0)),
         "last_handoff_at": _iso(latest_handoff),
@@ -198,9 +242,50 @@ def _load_previous(path: Path) -> dict[str, Any] | None:
 def _project_changed(cur: dict[str, Any], prev: dict[str, Any]) -> bool:
     fields = (
         "checkpoint_id", "status", "last_activity_at", "last_handoff_at", "context_updated_at",
-        "summary_updated_at", "open", "next", "derived_state_pending",
+        "summary_updated_at", "open_ids", "next", "derived_state_pending",
     )
     return any(cur.get(k) != prev.get(k) for k in fields)
+
+
+def _summary(projects: list[dict[str, Any]], changed: list[str],
+             new_open: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """One short line per changed project, always naming the project.
+
+    e.g. 'Herald: 2 new open items · next: Verify Garden Beacon'
+    """
+    by_name = {p["name"]: p for p in projects}
+    new_by_project: dict[str, int] = {}
+    for n in new_open:
+        new_by_project[n["project"]] = new_by_project.get(n["project"], 0) + 1
+
+    # Projects with new OPEN items first, then most recently active.
+    order = sorted(changed, key=lambda n: by_name[n].get("last_activity_at") or "",
+                   reverse=True)
+    order.sort(key=lambda n: -new_by_project.get(n, 0))  # stable
+
+    out: list[dict[str, Any]] = []
+    for name in order[:MAX_SUMMARY_PROJECTS]:
+        p = by_name[name]
+        bits: list[str] = []
+        k = new_by_project.get(name, 0)
+        if k:
+            bits.append(f"{k} new open item{'s' if k != 1 else ''}")
+        else:
+            bits.append("updated")
+        if p.get("next"):
+            bits.append(f"next: {_headline(p['next'][0])}")
+        out.append({
+            "project": name,
+            "status": p.get("status"),
+            "new_open": k,
+            "open_total": p.get("open_total", 0),
+            "next": _headline(p["next"][0]) if p.get("next") else None,
+            "line": f"{name}: " + " · ".join(bits),
+        })
+    hidden = len(changed) - len(out)
+    if hidden > 0:
+        out.append({"project": None, "line": f"+{hidden} more project{'s' if hidden != 1 else ''} updated"})
+    return out
 
 
 def build_payload(previous: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -232,12 +317,13 @@ def build_payload(previous: dict[str, Any] | None = None) -> dict[str, Any]:
             if prev is None or _project_changed(cur, prev):
                 changed_projects.append(cur["name"])
 
-            old_open = {_norm(x) for x in ((prev or {}).get("open") or [])}
-            for item in cur.get("open") or []:
-                if _norm(item) not in old_open:
+            old_ids = set((prev or {}).get("open_ids") or [])
+            for item in cur["_open_full"]:
+                iid = _item_id(cur["name"], item)
+                if iid not in old_ids:
                     new_open.append({
                         "project": cur["name"],
-                        "id": _item_id(cur["name"], item),
+                        "id": iid,
                         "item": item,
                     })
 
@@ -248,10 +334,17 @@ def build_payload(previous: dict[str, Any] | None = None) -> dict[str, Any]:
             or review.get("updated_at") != prev_review.get("updated_at")
         )
 
+    summary = _summary(projects, changed_projects, new_open)
+    for p in projects:
+        p.pop("_open_full", None)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(timespec="seconds"),
         "baseline": baseline,
+        # Display-ready: one entry per changed project, name first. Herald
+        # should render this rather than the raw lists below.
+        "summary": summary,
         "counts": {
             "projects": len(projects),
             "changed_projects": len(changed_projects),
