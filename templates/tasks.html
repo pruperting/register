@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}tasks · project register{% endblock %}
+{% block content %}
+<div class="bar"><h1>tasks by project</h1><span class="spacer"></span><a class="ghost sm" href="/api/obsidian/project-index">Obsidian project index</a></div>
+<p class="hint">Obsidian daily-note tasks take precedence over accepted checkpoint OPEN/NEXT items. This page never changes checkpoint authority. Checked Obsidian tasks are displayed separately and not used as proof that checkpoint work is complete.</p>
+{% if data.unassigned %}
+<section class="panel"><h2>unassigned daily-note tasks ({{ data.unassigned|length }})</h2>
+<p class="hint">Fix the project heading in the source note using an exact [[ProjectName]] from the project index.</p>
+<ul>{% for t in data.unassigned %}<li>{{ t.claimed_project }} · {{ t.text }} · <a href="{{ obsidian_uri(t.path) }}">{{ t.date }}</a></li>{% endfor %}</ul></section>
+{% endif %}
+{% for group in data.tasks|groupby('project') %}
+<section class="panel"><h2><a href="{{ url_for('detail', name=group.grouper) }}">{{ group.grouper }}</a> <span class="dim">{{ group.list|length }} outstanding</span></h2>
+<ul class="files">{% for t in group.list|sort(attribute='source', reverse=True) %}
+<li><strong>{% if t.priority == 'high' %}HIGH · {% endif %}{{ t.text }}</strong>
+<span class="dim">{{ t.source }}{% if t.section %} · {{ t.section }}{% endif %}</span>
+{% if t.path %}<a href="{{ obsidian_uri(t.path) }}">source note · {{ t.date }}</a>{% endif %}
+</li>{% endfor %}</ul></section>
+{% else %}<p class="hint">No open tasks found. Check DAILY_NOTES_DIR and existing checkpoints.</p>{% endfor %}
+<details><summary>Completed daily-note tasks ({{ data.done|length }})</summary><ul>{% for t in data.done %}<li>{{ t.project }} · {{ t.text }} · <a href="{{ obsidian_uri(t.path) }}">{{ t.date }}</a></li>{% endfor %}</ul></details>
+{% endblock %}
