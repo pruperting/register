@@ -174,3 +174,57 @@ def dashboard():
                                   t.get("section") != "NEXT", t["project"], t["text"]))
     return {"tasks": all_tasks, "unassigned": data["unassigned"],
             "done": [t for t in data["tasks"] if t["done"]], "updates": data["updates"]}
+
+# These two generated notes are exclusively managed by Register. Existing
+# user-authored notes are never overwritten unless they already bear the marker.
+MANAGED_MARKER = "<!-- register-managed:obsidian-projects-v1 -->"
+INDEX_FILE = "Register Project Index.md"
+TEMPLATE_FILE = "Register Daily Template.md"
+
+
+def _managed_write(filename, body):
+    destination = register.VAULT_PATH / filename
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        return "blocked"
+    if destination.exists():
+        try:
+            old = destination.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "blocked"
+        if not old.startswith(MANAGED_MARKER):
+            return "blocked"
+        if old == body:
+            return "unchanged"
+    register._atomic_write(destination, body)
+    return "updated"
+
+
+def daily_template():
+    # Templater resolves the canonical list using the generated index;
+    # Obsidian's ordinary Templates plugin cannot execute this script.
+    return (MANAGED_MARKER + """
+---
+type: daily-note
+---
+# <% tp.date.now("YYYY-MM-DD") %>
+
+## Today
+
+## Existing projects
+<%*
+const source = await tp.app.vault.adapter.read("Register Project Index.md");
+const projects = [...source.matchAll(/^- \\[\\[([^\\]]+)\\]\\]$/gm)].map(m => m[1]);
+const choice = await tp.system.suggester(projects, projects, false, "Choose a Register project");
+if (choice) tR += "### [[" + choice + "]]\\n- [ ] ";
+%>
+
+## New projects / ideas
+
+## Tomorrow
+""")
+
+
+def sync_project_notes():
+    """Update only Register-owned documents, never overwrite user notes."""
+    return {"index": _managed_write(INDEX_FILE, MANAGED_MARKER + "\\n" + project_index()),
+            "template": _managed_write(TEMPLATE_FILE, daily_template())}
