@@ -21,7 +21,7 @@ MAX_BYTES = 128_000
 
 
 def active_names():
-    return {p["name"] for p in register.project_list() if not p["archived"]}
+    return {p["name"] for p in register.project_list() if not p["archived"] and p["name"] != "_estate"}
 
 
 def note_root():
@@ -138,7 +138,7 @@ def context_overlay(name, checkpoint, data=None):
 
 def project_index():
     """Deterministic markdown for an Obsidian project picker/index."""
-    projects = sorted((p for p in register.project_list() if not p["archived"]),
+    projects = sorted((p for p in register.project_list() if not p["archived"] and p["name"] != "_estate"),
                       key=lambda p: p["name"].casefold())
     return "# Register project index\n\nGenerated from Register. Copy an exact link into the Existing projects section of your daily note.\n\n" + "".join(f"- [[{p['name']}]]\n" for p in projects)
 
