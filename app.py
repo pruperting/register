@@ -17,6 +17,7 @@ import markdown as _markdown
 import register
 import herald_status
 import checkpoints
+import obsidian_tasks
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -111,6 +112,21 @@ def index():
                            needs_handoff=needs_handoff,
                            unfiled=register.unfiled_groups(),
                            badly_named=[p for p in active if not p["name_ok"]])
+
+
+@app.route("/tasks")
+def tasks_page():
+    return render_template("tasks.html", data=obsidian_tasks.dashboard())
+
+
+@app.route("/api/tasks")
+def api_tasks():
+    return jsonify(obsidian_tasks.dashboard())
+
+
+@app.route("/api/obsidian/project-index")
+def api_obsidian_project_index():
+    return Response(obsidian_tasks.project_index(), mimetype="text/markdown")
 
 
 @app.route("/archive")
@@ -215,6 +231,7 @@ def api_context(name):
         headers["Content-Disposition"] = f'attachment; filename="{register.context_name(p["name"])}"'
     try:
         text = checkpoints.export_context(name, compact=request.args.get("compact") == "1")
+        text = obsidian_tasks.context_overlay(name, text)
     except ValueError as e:
         return jsonify({"status": "error", "reason": str(e)}), 409
     return Response(text, mimetype="text/plain", headers=headers)
@@ -348,7 +365,7 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
                 .replace("<PROJECT>", name)
                 .replace("<REPO>", repo)
                 .replace("<PROJECT_SELECTION_RULE>", selection_rule)
-                .replace("<CURRENT_CHECKPOINT>", checkpoint)
+                .replace("<CURRENT_CHECKPOINT>", obsidian_tasks.context_overlay(name, checkpoint))
                 .replace("<SLUG_LIST>", f"  {name}")
             )
 
