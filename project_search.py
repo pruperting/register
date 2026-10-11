@@ -30,7 +30,10 @@ def search(query: str):
                 continue
             if any(part.startswith(".") for part in path.relative_to(project).parts):
                 continue
-            if path.stat().st_size > MAX_FILE_BYTES:
+            try:
+                if path.stat().st_size > MAX_FILE_BYTES:
+                    continue
+            except OSError:
                 continue
             examined += 1
             try:
