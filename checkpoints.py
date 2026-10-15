@@ -1,5 +1,6 @@
 """Complete conversation-authored checkpoints; deterministic import, explicit Gemini seed."""
 import hashlib
+import os
 import json
 import re
 import threading
@@ -10,7 +11,12 @@ import frontmatter
 
 SECTIONS = ('GOAL', 'STACK', 'ARCH', 'FILES', 'STATE', 'DONE', 'CORRECTIONS',
             'DEC', 'INV', 'BUG', 'OPEN', 'NEXT', 'REJECTED', 'FACTS')
+# Gemini bootstrap generation retains its existing 15k document allowance.
 MAX_TOKENS = 15000
+# Accepted conversation-authored checkpoints can be larger. A configured
+# override requires deliberate container configuration and recreation.
+WARNING_TOKENS = 15000
+HARD_MAX_TOKENS = max(WARNING_TOKENS, int(os.environ.get('CHECKPOINT_HARD_MAX_TOKENS', '25000')))
 _publish_lock = threading.RLock()
 
 
@@ -108,8 +114,11 @@ def parse(meta, body, name):
     split_context(context)
     if meta.get('project_status') not in (None, '', *_reg().STATUSES):
         raise ValueError('project_status must be a recognised Register status')
-    if _reg()._estimate_tokens(body) > MAX_TOKENS:
-        raise ValueError('checkpoint exceeds 15000 estimated tokens; shorten it in the conversation')
+    count = _reg()._estimate_tokens(body)
+    if count > HARD_MAX_TOKENS:
+        raise ValueError(
+            f'checkpoint exceeds {HARD_MAX_TOKENS} estimated tokens '
+            f'({count}); shorten it in the conversation, preserving all sections')
     payload = json.dumps({'based_on': parent, 'summary': summary, 'context': context, 'project_status': meta.get('project_status', ''), 'reconciles': sorted(reconciles)}, sort_keys=True)
     identity = hashlib.sha256(payload.encode()).hexdigest()
     return {'id': identity, 'parent': parent, 'summary': summary, 'context': context,
@@ -537,7 +546,10 @@ def export_context(name, compact=False):
             u['hard'] = True
         # Snapshot input is already semantically reconciled. Do not run old
         # correction/dedupe logic on a finished conversation-authored snapshot.
-        candidate = reg._render_units(units, 'safe-export', MAX_TOKENS).strip()
+        # All items are protected; don't imply that an accepted 20k context
+        # somehow became a 15k compact export.
+        export_target = max(MAX_TOKENS, reg._estimate_tokens(context))
+        candidate = reg._render_units(units, 'safe-export', export_target).strip()
         if len(candidate) < len(context):
             context = candidate
     key = identity(name)

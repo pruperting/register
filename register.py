@@ -1412,6 +1412,17 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
     parsed, correction_stats=_reconcile_corrections(parsed)
     parsed=_apply_snapshot_sections(parsed) if snapshots else [u for u in parsed if u.get("kind") != "section-marker"]
     units=_dedupe_units(parsed)
+    # Selective compression must not silently erase every fact from an
+    # inhabited section. Protect one high-value representative per section,
+    # even when the soft target needs to overflow. This is NOT losslessness.
+    covered = {u['section'] for u in units if u['hard']}
+    for section in _COMPRESS_SECTIONS:
+        if section in covered:
+            continue
+        candidates = [u for u in units if u['section'] == section]
+        if candidates:
+            representative = max(candidates, key=lambda u: (u['score']/max(8, u['tokens']), u['score']))
+            representative['hard'] = True
     if protect_anchors:
         for u in units:
             if u["kind"] in ("code", "table") or _EXACT.search(u["text"]) or u["section"] in ("DONE", "REJECTED"):
@@ -1440,6 +1451,18 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
         result=_render_units(selected,profile,budget)
 
     hard_missing=[u["text"] for u in hard if u["text"] not in result]
+    # Coverage covers eligible, reconciled input items vs output items.
+    # Unlike the protected-only check, this surfaces dropped architecture,
+    # paths, rejected decisions and unprotected project facts.
+    from collections import Counter
+    eligible = Counter(u['section'] for u in units)
+    retained = Counter(u['section'] for u in selected)
+    coverage = {section: {
+        'input_units': eligible[section],
+        'retained_units': retained[section],
+        'omitted_units': max(0, eligible[section] - retained[section]),
+    } for section in _COMPRESS_SECTIONS}
+    omitted = sum(row['omitted_units'] for row in coverage.values())
     protected_tokens = sum(u['tokens'] for u in hard)
     output_tokens = _tok(result)
     overflow = max(0, output_tokens - budget)
@@ -1449,35 +1472,67 @@ def _deterministic_compress(documents, profile="balanced", target_tokens=3000, p
             "soft_target":budget,"protected_tokens":protected_tokens,"output_tokens":output_tokens,
             "budget_overflow":overflow,"overflow_reason":overflow_reason,
             "units_total":len(units),"units_selected":len(selected),
+            "section_coverage":coverage,"omitted_units":omitted,
             "corrections":correction_stats["corrections"],
             "corrections_reconciled":correction_stats["reconciled_units"],
             "elapsed_s":round(time.monotonic()-t0,2),"target_tokens":budget}
 
 
 
-def compress_documents(documents:list[tuple[str,str]], mode="balanced",
+def compress_documents(documents:list[tuple[str,str]], mode="lossless",
                        verify=None, engine="deterministic", target_tokens=3000,
                        refine_target_tokens=None, progress=None)->dict:
     """Production document compressor: deterministic only, no model calls."""
-    clean=[(str(n)[:255],(t or "").strip()) for n,t in documents if (t or "").strip()]
+    clean=[(str(n)[:255],(t or "")) for n,t in documents if (t or "").strip()]
     if not clean:
         return {"status":"error","reason":"no readable document content"}
     source="\n\n".join(f"FILE: {n}\n{t}" for n,t in clean)
     try:
+        if mode == "lossless":
+            # Preserve the original document *verbatim*, including CTX/2,
+            # section bodies, Markdown, frontmatter, correction chains and code.
+            # Multiple files are separated, not merged or reconciled. A lossless
+            # archive is chat input, NOT a canonical replacement checkpoint.
+            if len(clean) == 1:
+                candidate = clean[0][1]
+            else:
+                candidate = "\n\n".join(
+                    f"SOURCE_FILE {i}: {name}\n{body}\nEND_SOURCE_FILE {i}"
+                    for i, (name, body) in enumerate(clean, 1))
+            inp = sum(_tok(body) for _, body in clean)
+            out = _tok(candidate)
+            return {
+                "status": "generated", "context": candidate,
+                "mode": "lossless", "engine": "lossless-copy", "lossy": False,
+                "verified": True, "verification": "all source text preserved",
+                "protected_facts": 0, "protected_retained": 0,
+                "protected_missing": 0, "corrections": 0,
+                "corrections_reconciled": 0, "units_total": 0,
+                "units_selected": 0, "section_coverage": {},
+                "omitted_units": 0, "target_tokens": None,
+                "files": len(clean), "input_tokens": inp,
+                "output_tokens": out,
+                "reduction_pct": round((1-out/inp)*100, 1) if inp else 0,
+                "ratio": round(inp/out, 2) if out else 0,
+                "model": "none", "ai_calls": 0, "elapsed_s": 0,
+            }
+        if mode not in ("safe", "balanced", "dense"):
+            return {"status": "error", "reason": "unknown compression profile"}
         det=_deterministic_compress(clean,mode,int(target_tokens),progress)
         candidate=det["context"]
         inp=_tok(source); out=_tok(candidate)
         return {
             "status":"generated","context":candidate,"mode":mode,
-            "engine":"deterministic","verified":not det["missing_hard"],
-            "verification":("protected-fact check passed" if not det["missing_hard"]
-                            else f"{len(det['missing_hard'])} protected facts missing"),
+            "engine":"deterministic","lossy":True,"verified":False,
+            "verification":("Selective output: protected items checked, but "
+                            "unprotected content may be omitted"),
             "protected_facts":det["hard_facts"],
             "protected_retained":det["hard_facts"]-len(det["missing_hard"]),
             "protected_missing":len(det["missing_hard"]),
             "corrections":det.get("corrections",0),
             "corrections_reconciled":det.get("corrections_reconciled",0),
             "units_total":det["units_total"],"units_selected":det["units_selected"],
+            "section_coverage":det["section_coverage"],"omitted_units":det["omitted_units"],
             "target_tokens":det["target_tokens"],"files":len(clean),
             "input_tokens":inp,"output_tokens":out,
             "reduction_pct":round((1-out/inp)*100,1) if inp else 0,

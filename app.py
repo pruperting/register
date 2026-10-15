@@ -208,7 +208,7 @@ def api_compress():
                             "reason": f"uploads exceed {COMPRESS_MAX_MB} MB limit"}), 413
         docs.append((Path(f.filename or "document.md").name,
                      raw.decode("utf-8", errors="replace")))
-    mode = request.form.get("mode", "balanced").lower()
+    mode = request.form.get("mode", "lossless").lower()
     try:
         target_tokens = max(1000, min(12000, int(request.form.get("target_tokens", "12000"))))
     except ValueError:
@@ -354,6 +354,10 @@ def _prompt_text(kind: str = "handoff", project: str | None = None) -> str:
         created_at = datetime.now(timezone.utc).isoformat(
             timespec="microseconds").replace("+00:00", "Z")
         template = template.replace("<CREATED_AT>", created_at)
+        template = (template
+            .replace("<HANDOFF_TARGET_TOKENS>", str(min(13000, checkpoints.HARD_MAX_TOKENS - 2000)))
+            .replace("<HANDOFF_WARN_TOKENS>", str(checkpoints.WARNING_TOKENS))
+            .replace("<HANDOFF_HARD_MAX_TOKENS>", str(checkpoints.HARD_MAX_TOKENS)))
 
     if kind == "debrief":
         p = register.project(project) if project else None

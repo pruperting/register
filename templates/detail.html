@@ -54,6 +54,9 @@
   {% elif p.checkpoint_result.status == 'bootstrap-required' %}
   <p class="notice">This project needs a complete checkpoint. Bootstrap existing handoffs once with Gemini, or save a full checkpoint from a conversation using its project-specific handoff prompt. Existing summaries below are legacy views.</p>
   {% endif %}
+  {% if p.has_context and p.context_tokens > 15000 %}
+  <p class="notice">Large accepted checkpoint (~{{ p.context_tokens }} estimated tokens). Aim for 13,000 in the next handoff; preserve technical facts before cutting history or repetition.</p>
+  {% endif %}
   {% if p.summary %}<div class="md">{{ p.summary | markdown | safe }}</div>
   {% else %}<p class="dim">The complete checkpoint supplies the human summary shown here. Routine imports make no AI calls.</p>{% endif %}
 </section>

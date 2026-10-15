@@ -116,7 +116,7 @@ def test_invalid_snapshot_retains_both_published_views(project,broken):
     if broken=='wrong-project': meta['project']='demo'
     if broken=='bad-time': meta['created_at']='2026-10-08'
     if broken=='unclosed-fence': value += '\n```bash\nunfinished'
-    if broken=='oversize': value+='x'*61000
+    if broken=='oversize': value+='x'*101000
     (project/'handoffs'/'broken.md').write_text(frontmatter.dumps(frontmatter.Post(value,**meta)))
     reg.invalidate()
     assert reg.refresh_project('Demo')['status']=='error'

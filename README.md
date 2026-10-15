@@ -89,21 +89,29 @@ there is no silent last-writer-wins merge. Wrong project slugs go to the
 existing unfiled queue. Structural validation is deliberately conservative:
 missing sections cannot inherit historical state accidentally.
 
-The full source checkpoint has a hard maximum of approximately 15000 tokens.
-Conversation AI should remove repetition and narration before sacrificing
-continuation-critical facts. Historical handoffs remain unchanged. After
-migration, later incremental legacy handoffs are not silently folded in; use
-the complete-checkpoint prompt for subsequent updates.
+The handoff prompt aims for ~13000 estimated tokens (body length/4). An
+accepted conversation checkpoint over 15000 displays a visible size warning;
+the hard import ceiling defaults to 25000 and is configurable using
+`CHECKPOINT_HARD_MAX_TOKENS` in `.env` (container recreation required). Gemini
+bootstrap retains its separate 15000-token generation/validation ceiling, so
+this does not automatically increase model usage. Register still validates
+format and ancestry rather than semantic truth. Conversation AI should remove
+repetition before sacrificing continuation-critical facts. Historical handoffs
+remain unchanged; complete checkpoints replace every section.
 
 ## Upload compressor retained
 
-The **compress** page accepts `.md`, `.markdown` and `.txt` files (20 MB default)
-and produces deterministic chat-facing CTX/2 with Safe/Balanced/Dense profiles.
-It makes zero model calls, retains protected corrections and task sections,
-and understands plain CTX/2 markers, including DONE. Uploads/results are
-transient and do not alter the vault; copy or download the `.ctx` result.
-This general-purpose compressor selects facts under a soft budget. For a
-complete project's lossless chat copy, use its dedicated compact download.
+The **compress** page accepts `.md`, `.markdown` and `.txt` files (20 MB default).
+Default **Lossless** copies all input text without dropping information or
+reconciling independent files; it is a source archive for AI chat, not an
+importable replacement checkpoint. When one file is supplied, the output is
+that file's content. Multiple files have explicit SOURCE_FILE boundaries.
+Selective Safe/Balanced/Dense are **lossy** and display per-section eligible
+unit retention and a prominent warning (including any entirely emptied
+sections). Their protected-only check is NOT semantic completeness verification.
+All modes use zero AI calls; uploads and results are transient, not saved.
+For a project's original authoritative checkpoint, use the full or compact
+context download on its project page.
 Compression logs distinguish `soft_target`, `protected_tokens`, `output_tokens`
 and `budget_overflow`. A `protected-facts` overflow means evidence was preserved
 rather than discarded to meet a soft target; it is not a hard-limit failure.

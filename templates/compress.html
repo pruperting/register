@@ -20,9 +20,10 @@
     <div class="compress-options">
       <label>Profile
         <select id="compress-mode">
-          <option value="safe">Safe</option>
-          <option value="balanced" selected>Balanced</option>
-          <option value="dense">Dense</option>
+          <option value="lossless" selected>Lossless · preserve everything</option>
+          <option value="safe">Selective · Safe (lossy)</option>
+          <option value="balanced">Selective · Balanced (lossy)</option>
+          <option value="dense">Selective · Dense (lossy)</option>
         </select>
       </label>
       <label>Target
@@ -34,8 +35,8 @@
           <option value="5000">Cap at ~5,000</option>
         </select>
       </label>
-      <span class="muted">default: local Markdown-aware extraction · exact source text retained</span>
-      <span class="muted">no model calls · DONE, OPEN/NEXT and corrections protected</span>
+      <span class="muted">Lossless: entire original text preserved; multiple sources kept separate. No reduction target applies.</span>
+      <span class="muted">Selective modes discard some facts; omission counts are displayed. No model calls.</span>
     </div>
 
     <div class="actions">
@@ -51,6 +52,10 @@
       <div><strong id="stat-reduction">—</strong><span>reduction</span></div>
       <div><strong id="stat-ratio">—</strong><span>compression</span></div>
     </div>
+    <p id="compress-warning" class="notice" hidden></p>
+    <details id="compress-coverage" hidden><summary>Section retention (eligible units)</summary>
+      <pre id="compress-coverage-text"></pre>
+    </details>
     <textarea id="compress-output" spellcheck="false" readonly></textarea>
     <div class="actions">
       <button id="copy-compressed">copy context</button>
@@ -66,6 +71,12 @@
 const input = document.getElementById('file-input');
 const drop = document.getElementById('drop-zone');
 const list = document.getElementById('file-list');
+const modeEl = document.getElementById('compress-mode');
+const targetEl = document.getElementById('compress-target');
+modeEl.addEventListener('change', () => {
+  targetEl.disabled = modeEl.value === 'lossless';
+});
+targetEl.disabled = modeEl.value === 'lossless';
 const btn = document.getElementById('compress-btn');
 const status = document.getElementById('compress-status');
 const result = document.getElementById('compress-result');
@@ -129,11 +140,30 @@ async function pollCompress(key) {
     document.getElementById('stat-output').textContent = Number(x.output_tokens).toLocaleString();
     document.getElementById('stat-reduction').textContent = `${x.reduction_pct}%`;
     document.getElementById('stat-ratio').textContent = `${x.ratio}×`;
-    document.getElementById('verified-label').textContent =
-      `${x.engine} · ${x.model === 'none' ? 'no AI calls' : x.model}` +
-      ` · protected ${x.protected_retained || 0}/${x.protected_facts || 0}` +
-      ` · missing ${x.protected_missing || 0} · AI calls 0 · ${x.units_selected}/${x.units_total} units` +
-      (x.verified === true ? ' · deterministic check ✓' : '');
+    const warning = document.getElementById('compress-warning');
+    const details = document.getElementById('compress-coverage');
+    const coverageText = document.getElementById('compress-coverage-text');
+    const selected = !!x.lossy;
+    warning.hidden = !selected;
+    details.hidden = !selected;
+    if (selected) {
+      const coverage = Object.entries(x.section_coverage || {});
+      coverageText.textContent = coverage.map(([name, v]) =>
+        `${name.padEnd(13)} kept ${v.retained_units}/${v.input_units}` +
+        (v.omitted_units ? ` · OMITTED ${v.omitted_units}` : '')).join('\n');
+      const emptySections = coverage.filter(([name, v]) =>
+        v.input_units > 0 && v.retained_units === 0).map(([name]) => name);
+      warning.textContent = `LOSSY compression: ${x.omitted_units || 0} eligible items omitted.` +
+        (emptySections.length ? ` Entire sections emptied: ${emptySections.join(', ')}.` : '') +
+        ' This is not a verified complete project context. Choose Lossless for authoritative handoffs.';
+      document.getElementById('verified-label').textContent =
+        `Selective · protected items ${x.protected_retained || 0}/${x.protected_facts || 0} retained` +
+        ` · ${x.units_selected}/${x.units_total} eligible units · NOT completeness verified`;
+    } else {
+      coverageText.textContent = '';
+      document.getElementById('verified-label').textContent =
+        `Lossless · all input text retained · ${x.files} source file(s) · no AI calls`;
+    }
     result.hidden = false; status.textContent = 'done';
     btn.disabled=false; btn.textContent='compress';
   } catch (e) {

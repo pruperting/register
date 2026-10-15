@@ -118,9 +118,23 @@ never fill gaps from general knowledge.
 
 Use terse bullets/semicolons where safe. Remove repetition and narrative first,
 not tasks, completed work, corrections, decisions, gotchas or technical anchors.
-Aim for a compact chat-ready checkpoint appropriate to the project's size;
-maximum 15000 estimated tokens (roughly 60000 characters) for the whole document.
-The snapshot is complete, so DO NOT rely on Register to union historical sections.
+SIZE CONTRACT — enforce this BEFORE returning the final document:
+- Target no more than <HANDOFF_TARGET_TOKENS> estimated tokens for the entire
+  body, from `## Human summary` through the last CTX/2 line (roughly
+  <HANDOFF_TARGET_TOKENS> × 4 characters). The warning threshold is
+  <HANDOFF_WARN_TOKENS> estimated tokens.
+- The absolute Register rejection limit is <HANDOFF_HARD_MAX_TOKENS>
+  estimated tokens for that same body. NEVER output a larger document.
+- Before finalising, estimate body tokens as round(character_count / 4),
+  including the human summary, all headings, lists and code. Leave headroom
+  rather than aiming at the hard limit. If too long, revise and check again.
+- Remove repetition, verbose narration and superseded historical detail FIRST.
+  Keep every still-valid decision, technical literal, task, correction, bug,
+  deployment distinction and essential implementation fact; do not turn a
+  substantive section into `-` just to reach the target. Preserve every one
+  of the fourteen sections in the prescribed order.
+- Complete the document within the cap; never send a truncated, partial,
+  delta-only or multi-part checkpoint. Register does not merge old sections.
 
 Save as an ordinary .md handoff file named with this conversation and date,
 preferably under projects/<PROJECT>/handoffs/. Do not name the upload
