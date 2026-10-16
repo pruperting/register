@@ -15,6 +15,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import markdown as _markdown
 
 import register
+import context_compactor
 import herald_status
 import checkpoints
 import obsidian_tasks
@@ -199,28 +200,16 @@ def api_compress():
     for f in files:
         suffix = Path(f.filename or "").suffix.lower()
         if suffix not in allowed:
-            return jsonify({"status": "error",
-                            "reason": f"unsupported file type: {f.filename}"}), 400
+            return jsonify({"status": "error", "reason": f"unsupported file type: {f.filename}"}), 400
         raw = f.read()
         total += len(raw)
         if total > limit:
-            return jsonify({"status": "error",
-                            "reason": f"uploads exceed {COMPRESS_MAX_MB} MB limit"}), 413
-        docs.append((Path(f.filename or "document.md").name,
-                     raw.decode("utf-8", errors="replace")))
-    mode = request.form.get("mode", "lossless").lower()
-    try:
-        target_tokens = max(1000, min(12000, int(request.form.get("target_tokens", "12000"))))
-    except ValueError:
-        target_tokens = 12000
+            return jsonify({"status": "error", "reason": f"uploads exceed {COMPRESS_MAX_MB} MB limit"}), 413
+        docs.append((Path(f.filename or "document.md").name, raw.decode("utf-8", errors="replace")))
     key = f"compress:{time.time_ns()}"
-    logger.info("compress request key=%s files=%d bytes=%d profile=%s target=%d engine=deterministic",
-                key, len(docs), total, mode, target_tokens)
-    return _start(
-        key,
-        lambda: register.compress_documents(
-            docs, mode=mode, target_tokens=target_tokens,
-            progress=lambda msg: _job_progress(key, msg)))
+    logger.info("local lexical compaction key=%s files=%s bytes=%s", key, len(docs), total)
+    return _start(key, lambda: context_compactor.compress_documents(
+        docs, progress=lambda msg: _job_progress(key, msg)))
 
 
 @app.route("/api/summary/<name>", methods=["POST"])

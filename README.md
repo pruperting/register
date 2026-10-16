@@ -99,23 +99,6 @@ format and ancestry rather than semantic truth. Conversation AI should remove
 repetition before sacrificing continuation-critical facts. Historical handoffs
 remain unchanged; complete checkpoints replace every section.
 
-## Upload compressor retained
-
-The **compress** page accepts `.md`, `.markdown` and `.txt` files (20 MB default).
-Default **Lossless** copies all input text without dropping information or
-reconciling independent files; it is a source archive for AI chat, not an
-importable replacement checkpoint. When one file is supplied, the output is
-that file's content. Multiple files have explicit SOURCE_FILE boundaries.
-Selective Safe/Balanced/Dense are **lossy** and display per-section eligible
-unit retention and a prominent warning (including any entirely emptied
-sections). Their protected-only check is NOT semantic completeness verification.
-All modes use zero AI calls; uploads and results are transient, not saved.
-For a project's original authoritative checkpoint, use the full or compact
-context download on its project page.
-Compression logs distinguish `soft_target`, `protected_tokens`, `output_tokens`
-and `budget_overflow`. A `protected-facts` overflow means evidence was preserved
-rather than discarded to meet a soft target; it is not a hard-limit failure.
-
 ## Weekly Gemini estate review and Herald
 
 The estate review remains separate from per-project updating. It runs **Sunday
@@ -251,3 +234,21 @@ reconcile those histories deliberately before relying on the merged checkpoint.
 `tidy-vault.py` inventories/cleans the vault (read-only by default);
 `secret-scan.py` and `secretscan.py` remain available. Credential values belong
 only in `.env`, never in versioned files, handoffs or review output.
+
+## Occasional local text compressor
+
+The `/compress` page is a convenience for *raw conversational prose* or casual
+Markdown uploads. It runs entirely on the server without AI calls, using three
+conservative text-processing passes: Markdown-aware spacing, short phrase
+substitutions and guarded lexical replacements. It does not require headings or
+delete whole paragraphs. It keeps code, URLs and critical literals protected,
+and shows a change audit. It counts actual local `cl100k_base` reference tokens
+(not Gemini tokens) and retains each original document if shortening does not
+save reference tokens. Source uploads are transient, never written to the vault.
+
+Dense AI-written handoff checkpoints often show **0% reduction**. This is
+expected: the real semantic compression happens when the conversation AI writes
+the complete handoff, using `handoff_prompt.md` and its token budget. Local
+lexical signature checks cannot prove full factual or semantic equivalence.
+Never use the upload compressor to shorten a failing canonical checkpoint.
+

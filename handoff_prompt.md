@@ -116,8 +116,18 @@ correction audit records. Record new corrections in the exact structured shape
 above rather than just omitting the old fact. Preserve unknowns as unknown;
 never fill gaps from general knowledge.
 
-Use terse bullets/semicolons where safe. Remove repetition and narrative first,
-not tasks, completed work, corrections, decisions, gotchas or technical anchors.
+Produce the compact, authoritative project knowledge during this handoff,
+not a verbose transcript that will need downstream compression. Use each
+unique fact once in its most relevant CTX/2 section; where a second section
+needs the same point, cross-reference it briefly rather than duplicating its
+full detail. Combine equivalent statements only when they really express the
+same fact. Explicit corrections must retain PREVIOUS, CURRENT and EVIDENCE;
+never silently merge conflicting claims or treat a proposal as deployed.
+Use concise complete sentences or terse bullets/semicolons, but never remove
+negations, uncertainty, time/status distinctions, commands, paths, numbers,
+completed work, unresolved tasks or reasoning needed to resume accurately.
+Prioritise factual fidelity over artificial brevity and do not pad to a token
+target. Register's local /compress page is not a second semantic summariser.
 SIZE CONTRACT — enforce this BEFORE returning the final document:
 - Target no more than <HANDOFF_TARGET_TOKENS> estimated tokens for the entire
   body, from `## Human summary` through the last CTX/2 line (roughly
