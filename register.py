@@ -193,7 +193,7 @@ def _is_generated_or_junk(filename: str) -> bool:
     never be treated as project material."""
     if filename in ("_project.md", "_summary.md", "RUNBOOK.md"):
         return True
-    if filename.endswith(("_summary.md", "_RUNBOOK.md", "_CONTEXT.md")):
+    if filename.endswith(("_summary.md", "_RUNBOOK.md", "_CONTEXT.md", "_RETIRED.md")):
         return True
     if "sync-conflict" in filename:          # Syncthing collision copies
         return True
@@ -269,7 +269,7 @@ def _scan() -> dict:
             except OSError as e:
                 logger.warning("cannot ensure handoffs directory for %s: %s", d, e)
             projects[d.name] = {
-                "name": d.name, "files": [], "handoffs": [], "mtime": 0.0,
+                "name": d.name, "files": [], "handoffs": [], "retired_sources": [], "mtime": 0.0,
                 "archived": archived,
                 "rel_dir": project_rel_dir(d.name, archived),
             }
@@ -298,6 +298,17 @@ def _scan() -> dict:
         try:
             mtime = path.stat().st_mtime
         except OSError:
+            continue
+
+        # Retirement sidecars are historical evidence ONLY. They must never
+        # be included among active/legacy handoffs, bootstrap evidence, or
+        # ordinary project references, even when synced into /handoffs.
+        if str(meta.get('type', '')).strip() == 'retired-knowledge':
+            if claimed in projects:
+                projects[claimed]['retired_sources'].append({
+                    'path': str(rel), 'mtime': mtime})
+            else:
+                logger.warning('unfiled retired-knowledge document: %s', rel)
             continue
 
         rec = {

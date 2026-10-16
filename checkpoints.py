@@ -143,6 +143,11 @@ def select(p):
             item = parse(meta, body, p['name'])
         except (ValueError, TypeError) as e:
             raise ValueError(f"invalid checkpoint {f['path']}: {e}") from e
+        # New two-document handoffs must be complete before publication.
+        # Older single-file checkpoints are intentionally grandfathered in.
+        if item['meta'].get('retired_sidecar') is True:
+            import retired_knowledge
+            retired_knowledge.require_pair(p, item)
         item['path'] = f['path']
         snapshots.setdefault(item['id'], item)
     # Source identity survives archive/rename moves. Project assignment and
@@ -252,11 +257,17 @@ def publish(name):
         return {'status': 'error', 'reason': str(e), 'ai_calls': 0}
     if not head:
         return {'status': 'bootstrap-required', 'reason': 'No complete checkpoint yet; use explicit Gemini bootstrap or a full conversation handoff.', 'ai_calls': 0}
+    import retired_knowledge
+    retired_result = retired_knowledge.sync(name, p)
+    if retired_result.get('status') == 'error':
+        reg.logger.error('retired knowledge import failed project=%s: %s',
+                         name, retired_result.get('reason'))
     cinfo = reg.context_info(name); sinfo = reg.summary_info(name)
     if (cinfo.get('context_source_mode') == 'conversation-checkpoint'
             and cinfo.get('context_source_digest') == head['id']
             and sinfo.get('summary_source_digest') == head['id']):
-        return {'status': 'fresh', 'checkpoint_id': head['id'], 'ai_calls': 0}
+        return {'status': 'fresh', 'checkpoint_id': head['id'], 'ai_calls': 0,
+                'retired_knowledge': retired_result}
     now = datetime.now(timezone.utc).isoformat()
     hwm = max((f['mtime'] for f in p.get('handoffs', [])), default=0)
     common = {'project': name, 'source_mode': 'conversation-checkpoint',
@@ -283,7 +294,8 @@ def publish(name):
         return {'status': 'error', 'reason': f'vault not writable: {e}', 'ai_calls': 0}
     reg.invalidate()
     return {'status': 'generated', 'checkpoint_id': head['id'], 'source_mode': 'conversation-checkpoint',
-            'verification': 'structure-and-ancestry', 'ai_calls': 0}
+            'verification': 'structure-and-ancestry', 'ai_calls': 0,
+            'retired_knowledge': retired_result}
 
 
 def pending(p):

@@ -252,3 +252,27 @@ the complete handoff, using `handoff_prompt.md` and its token budget. Local
 lexical signature checks cannot prove full factual or semantic equivalence.
 Never use the upload compressor to shorten a failing canonical checkpoint.
 
+
+
+## Archived retired knowledge (opt-in recovery)
+
+The project-specific handoff prompt now asks the conversation AI for TWO
+separate Markdown files: an active checkpoint (`type: handoff`,
+`retired_sidecar: true`) and a historical retirement sidecar
+(`type: retired-knowledge`, `archive_version: 1`). Save both under
+`projects/<Project>/handoffs/`. The sidecar uses the same fourteen CTX/2
+headings and is paired to the active checkpoint by `retired_from` (the prior
+CHECKPOINT_ID) and `paired_created_at` (the active checkpoint timestamp).
+
+Register refuses to accept a new flagged checkpoint until its paired sidecar
+arrives, but old single-document handoffs remain valid. Sidecars never enter
+active handoff counts, bootstrap evidence, current context, tasks, or default
+AI handoff prompts. Retired items accumulate in a rebuildable
+`<Project>_RETIRED.md` historical export with section and source provenance.
+Use the project page's **download historical retired knowledge** link or
+`GET /api/retired/<Project>?download=1` to recover that history on demand.
+Original handoffs and retirement sidecars remain the underlying evidence.
+
+This is structural validation only: Register cannot guarantee the AI copied
+every retired fact. Archive errors are reported under `retired_knowledge`
+and do not silently modify or merge anything into active state.

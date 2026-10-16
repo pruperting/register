@@ -72,6 +72,20 @@
     <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1&amp;compact=1">download compact chat copy</a>
     {% endif %}
   </div>
+  {% if p.retired_sources %}
+  <p class="hint">Historical recovery (not included in active context or default handoff prompts):
+    <a href="/api/retired/{{ p.name | urlencode }}?download=1">download historical retired knowledge</a>
+    · {{ p.retired_sources | length }} retirement sidecar(s)
+  </p>
+  {% endif %}
+  {% if p.checkpoint_result.get('retired_knowledge', {}).get('status') == 'error' %}
+  <p class="notice">Historical recovery archive requires attention:
+    {{ p.checkpoint_result.get('retired_knowledge', {}).get('reason', '') }}.
+    The previously generated history is retained.</p>
+  {% elif p.checkpoint_result.get('retired_knowledge', {}).get('unpaired', 0) %}
+  <p class="notice">{{ p.checkpoint_result.retired_knowledge.unpaired }} retirement file(s)
+    are awaiting their matching checkpoint; not yet included in the historical export.</p>
+  {% endif %}
   <p class="hint">Conversation-authored current state, DONE, corrections, decisions, OPEN/NEXT and technical anchors. Full snapshots remain immutable. The compact chat copy preserves all checkpoint items; it never changes the source. Legacy contexts are migration previews until a complete checkpoint is saved.</p>
   {% if p.has_context %}<details><summary>view checkpoint</summary><pre class="context-pre">{{ p.context }}</pre></details>{% endif %}
 </section>

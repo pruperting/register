@@ -18,6 +18,7 @@ import register
 import context_compactor
 import herald_status
 import checkpoints
+import retired_knowledge
 import obsidian_tasks
 import project_search
 
@@ -229,6 +230,20 @@ def api_bootstrap(name):
 @app.route("/api/consolidate/<name>", methods=["POST"])
 def api_consolidate(name):
     return _start(f"consolidate:{name}", lambda: register.consolidate_handoffs(name))
+
+
+@app.route('/api/retired/<name>')
+def api_retired(name):
+    # Historical recovery only; never part of default project context.
+    try:
+        payload = retired_knowledge.export(name)
+    except ValueError as exc:
+        return jsonify({'status': 'error', 'reason': str(exc)}), 404
+    headers = {}
+    if request.args.get('download') == '1':
+        headers['Content-Disposition'] = (
+            f'attachment; filename="{retired_knowledge.archive_name(name)}"')
+    return Response(payload, mimetype='text/markdown', headers=headers)
 
 
 @app.route("/api/context/<name>", methods=["GET", "POST"])

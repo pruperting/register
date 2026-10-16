@@ -20,7 +20,10 @@ CHECKPOINT_ID <BASED_ON>
 <CURRENT_CHECKPOINT>
 </prior_project_checkpoint>
 
-Return ONE Markdown document, without an outer code fence, preamble or sign-off.
+Produce TWO separate Markdown files: the complete ACTIVE checkpoint and
+its RETIRED knowledge sidecar. Never concatenate both into a single .md file.
+FILE 1 starts with exactly the YAML frontmatter below. FILE 2 is specified
+later in this prompt. No preamble or sign-off belongs in either saved file.
 Begin with exactly this YAML frontmatter (quote project and title safely):
 
 ---
@@ -30,6 +33,7 @@ date: <today's date, YYYY-MM-DD>
 created_at: <CREATED_AT>
 title: <short description of the resulting checkpoint>
 checkpoint_version: 1
+retired_sidecar: true
 based_on: <BASED_ON>
 project_status: <running/building/paused/idea/retired, or omit if not established>
 <RECONCILES>
@@ -146,10 +150,92 @@ SIZE CONTRACT — enforce this BEFORE returning the final document:
 - Complete the document within the cap; never send a truncated, partial,
   delta-only or multi-part checkpoint. Register does not merge old sections.
 
-Save as an ordinary .md handoff file named with this conversation and date,
+Save FILE 1 as an ordinary .md handoff file named with this conversation and date,
 preferably under projects/<PROJECT>/handoffs/. Do not name the upload
 <PROJECT>_CONTEXT.md or <PROJECT>_summary.md: those are Register's derived views.
 The exact project frontmatter files the document even if Syncthing puts it elsewhere.
+
+
+
+RELEVANCE REVIEW — DO THIS BEFORE WRITING FILE 1:
+Review EVERY item in the prior checkpoint, especially FACTS, CORRECTIONS,
+DONE, BUG and REJECTED. Assign an internal disposition: CURRENT (retain),
+UPDATED (keep authoritative current information in a suitable section), or
+RETIRED (historical material no longer needed for safe resumption). Every
+previous OPEN/NEXT item must be explicitly reconciled; never retire an
+unresolved task just because it is old. Age alone is NOT a retirement reason.
+
+Retire one-off diagnostics, old mistaken assumptions, superseded intermediate
+implementations and redundant historical detail only when their removal will
+not impair future decisions. Retain corrective lessons that prevent a repeated
+mistake and any currently needed command, restriction, known failure mode or
+technical fact. A useful current fact from a retired CORRECTION must still
+appear in the active checkpoint. Do not silently drop an older claim: if you
+classify it RETIRED, reproduce its substantive meaning in FILE 2. If a fact
+is only rewritten into a clearer current statement, it is UPDATED, not lost.
+
+OUTPUT TWO SEPARATE .md FILES (NEVER ONE CONCATENATED MARKDOWN FILE):
+FILE 1 is the complete active checkpoint specified above. Its frontmatter MUST
+contain retired_sidecar: true, linking it to FILE 2. The AI-facing token target
+and hard cap apply to FILE 1 (the active checkpoint), not FILE 2. If your AI
+interface supports creating two downloadable files, deliver both. Otherwise
+produce clearly labelled FILE 1 and FILE 2 separately, each in its own
+Markdown code block for manual saving; do not include labels or outer code
+fences INSIDE the saved files.
+
+FILE 2 is the retired-knowledge sidecar, saved alongside FILE 1 in the same
+projects/<PROJECT>/handoffs/ folder under a DISTINCT filename ending
+-retired.md. Use this EXACT YAML shape and the same 14 CTX/2 sections as FILE 1:
+
+---
+type: retired-knowledge
+archive_version: 1
+project: <PROJECT>
+retired_from: <BASED_ON>
+paired_created_at: <CREATED_AT>
+title: "Retired knowledge from this checkpoint update"
+---
+CTX/2
+GOAL
+-
+STACK
+-
+ARCH
+-
+FILES
+-
+STATE
+-
+DONE
+-
+CORRECTIONS
+-
+DEC
+-
+INV
+-
+BUG
+-
+OPEN
+-
+NEXT
+-
+REJECTED
+-
+FACTS
+-
+
+Replace each '-' with material RETIRED from that corresponding section of the
+prior checkpoint. All 14 headings must be present once and in order; use '-' in
+sections with no retirement. Preserve historical context precisely (including
+negations, numbers, reasons and useful literals), but do not put passwords,
+API keys or secrets in either output. FILE 2 must contain no Human summary and
+no active instructions. Its statements are historical, not authoritative.
+Even if nothing was retired, still produce FILE 2 with all fourteen sections
+set to '-': Register requires the pair to avoid an unnoticed knowledge-loss gap.
+Register retains every original handoff and every retired sidecar unchanged,
+then builds a separate cumulative historical file for optional recovery. This
+historical file is not consulted by the normal project prompt or active state.
 
 PROJECT SLUGS — copy one exact slug, including capitalisation:
 <SLUG_LIST>
