@@ -446,11 +446,16 @@ continuation-critical facts; target about {budget["target_tokens"]} estimated to
 hard maximum {budget["ceiling_tokens"]} (absolute ceiling 15000). Do not invent facts.
 Output exactly this body, without outer fences or YAML:
 ## Human summary
-At most 150 words in two short paragraphs. First, explain what the project is,
+At most 250 words in three short parts. First, explain what the project is,
 who or what it serves, the problem it solves, its main capabilities and overall
 current state; make it self-contained for a reader unfamiliar with the project.
 Second, describe the latest verified progress, outstanding issues and next steps.
+Third, **How to use it:** the web address (host:port) or command to run and
+where, then 2-5 plain everyday-use steps; only evidenced addresses/commands,
+otherwise write "Access address not recorded". Bold labels, no headings.
 Preserve the overall project description; do not write only a recent-change log.
+The owner is a hobbyist home-labber: never add enterprise-style monitoring,
+resilience or process work he did not ask for.
 ## AI checkpoint
 CTX/2
 {chr(10).join(s + chr(10) + '-' for s in SECTIONS)}

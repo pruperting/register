@@ -15,6 +15,49 @@ proposal. Keep completed work in DONE and implemented reality in STATE.
 Retain relevant older DONE entries, corrections and rejected approaches so the
 next AI knows what was tried, completed and remains outstanding.
 
+OWNER CONTEXT — calibrate everything you write to this:
+The owner is a hobbyist "vibe coder" running a home lab for fun, not a company.
+Nothing here is mission-critical: brief downtime, a missed scheduled run or a
+manual restart is acceptable. Prefer the simplest thing that works and that he
+can fix himself. Do NOT add or recommend enterprise-style work (HA/failover,
+monitoring or alerting stacks, uptime targets, audit trails, formal change
+control, exhaustive test matrices, multi-stage release processes, hardening
+checklists) unless the owner explicitly asked for it. When reconciling prior
+OPEN/NEXT items of that kind: if the evidence shows it was an AI suggestion the
+owner never asked for, move it to REJECTED with the reason "over-engineered
+for a home lab; owner did not ask". If you cannot tell who asked, keep it but
+prefix it "OPTIONAL:" and place it at the end of NEXT. The basics below
+(GitHub, .env) and a backup of irreplaceable data are NOT over-engineering.
+Record this once in INV as:
+- Home-lab hobby project: keep it simple; no enterprise-grade monitoring, resilience or process unless the owner asks.
+
+SOURCE CONTROL — every project's code lives at github.com/pruperting:
+- FILES must state the repository URL (https://github.com/pruperting/<repo>),
+  visibility if known, and whether the deployed copy matches what is pushed
+  (e.g. "deployed from local commits not yet pushed"). Never invent a URL and
+  never claim code is pushed without evidence (push output, a working URL).
+- If the project has no repo yet, or some of its code lives only in a host
+  folder, a container, a chat or ad-hoc scripts, add a NEXT item
+  "Put <project> on GitHub" with the exact commands, run from the deploy
+  directory, e.g.:
+    git init && git add . && git commit -m "Initial import"
+    gh repo create pruperting/<repo> --private --source . --push
+  and note that .gitignore must exclude .env, data, databases, media, logs and
+  caches BEFORE the first commit. Repo name: the project slug in lowercase.
+
+SECRETS — every project keeps credentials in a .env file:
+- Passwords, API keys, tokens, webhook URLs with embedded IDs and similar live
+  ONLY in a .env file in the project's deploy directory, read via docker
+  compose (env_file or ${NAME}) or os.environ / python-dotenv. A committed
+  .env.example lists the NAMES with blank values. .env is git-ignored.
+- STACK records the .env path and the variable NAMES, never values.
+- If any secret is hardcoded in code, docker-compose.yml, a config file, a
+  cron line or a script, or a .env file is committed to git, add an OPEN item
+  "Migrate <NAME> to .env" naming the file (not the value) and a NEXT step to
+  do it. If the value was ever committed or pasted into a chat, add "rotate it".
+- Once a migration is evidenced, record it in DONE and add to INV:
+  "Secrets only in .env; .env.example committed".
+
 <prior_project_checkpoint>
 CHECKPOINT_ID <BASED_ON>
 <CURRENT_CHECKPOINT>
@@ -54,8 +97,8 @@ Then output exactly these two Markdown H2 headings, in this order:
 
 ## Human summary
 
-A brief, readable Markdown summary (roughly 150–300 words, less for a small
-project) with two short paragraphs:
+A brief, readable Markdown summary (roughly 200–350 words, less for a small
+project) with three short parts:
 
 1. **Project overview:** explain what the project is, who or what it serves,
    the problem it solves, its main capabilities and its overall current state.
@@ -66,6 +109,15 @@ project) with two short paragraphs:
 2. **Recent progress and next steps:** explain the latest meaningful changes,
    verified completed work, outstanding issues and immediate next actions.
    Distinguish recent progress from the project's overall description.
+3. **How to use it:** written for the owner returning months later. Give the
+   exact way in: the web address with host and port (http://<host-ip>:<port>)
+   or the command to run and where (which machine and directory). Then 2–5
+   plain steps for everyday use: what to open, click or type and what he
+   should see. Add how to start or restart it if it is not always running.
+   Use only addresses and commands evidenced in this conversation or the prior
+   checkpoint; if unknown, write "Access address not recorded" and add an OPEN
+   item to confirm it. Credentials: say they are in .env; never give values.
+   Use bold labels for these parts, never a Markdown heading, inside this summary.
 
 Use plain language and mention important decisions where they help explain the
 project. Preserve uncertainty. Do not claim a local commit was pushed or deployed without evidence.
