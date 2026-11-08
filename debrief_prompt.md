@@ -88,6 +88,18 @@ complete than it is will make bad suggestions.
 where in the codebase that work would start. Describe the shape of the
 obvious next changes without prescribing an implementation.
 
+**House rules** Restate these owner rules so the next assistant follows them:
+- Hobby home lab: keep suggestions simple; no enterprise-style monitoring,
+  resilience or process unless the owner asks.
+- Code lives at github.com/pruperting/<repo>; say whether the deployed copy
+  matches what is pushed, and if there is no repo, say it needs putting there.
+- Secrets only in a git-ignored .env in the deploy directory (names only, never
+  values); flag any hardcoded secret as needing migration.
+- Before changing anything, back up the current setup to <deploy-dir>/backups/
+  (git- and docker-ignored, it holds .env); do all patch/scratch/clone work in a
+  `mktemp -d /tmp/<project>-work-XXXX` dir and delete it afterwards; never leave
+  patch_*.py, *.patch, *.pre-* or *.bak-* files in the deploy or home folders.
+
 Rules for the whole document:
 
 - Describe the system as it is **now**. If code was replaced, describe only

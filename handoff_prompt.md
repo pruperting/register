@@ -58,6 +58,22 @@ SECRETS — every project keeps credentials in a .env file:
 - Once a migration is evidenced, record it in DONE and add to INV:
   "Secrets only in .env; .env.example committed".
 
+WORKSPACE — how every change to a project is made (owner rule):
+- Before changing anything, back up the current setup into the deploy
+  directory's backups/ folder, e.g.
+    mkdir -p backups && tar -czf backups/<project>-$(date +%Y%m%d-%H%M).tar.gz \
+      --exclude=./.git --exclude=./backups --exclude=./data .
+  Backups include .env, so backups/ must be listed in .gitignore and
+  .dockerignore; if either is missing it, add a NEXT step to add it.
+- All patches, helper scripts, fresh clones and test copies go in a scratch dir
+  made with `mktemp -d /tmp/<project>-work-XXXX`, and every command sequence
+  you give ends by deleting it (`rm -rf "$WORK"`).
+- Never leave patch_*.py, *.patch, *.pre-*, *.bak-* or *-fresh files/folders in
+  the deploy directory or home folder. If STATE/FILES show such leftovers, add a
+  NEXT step to remove them (labtidy.py can quarantine them safely).
+Record this once in INV as:
+- Back up to <deploy-dir>/backups/ before changes; scratch work only in /tmp, removed afterwards.
+
 <prior_project_checkpoint>
 CHECKPOINT_ID <BASED_ON>
 <CURRENT_CHECKPOINT>

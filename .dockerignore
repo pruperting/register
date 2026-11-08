@@ -1,0 +1,14 @@
+# Keep the build context small and secrets out of it.
+# The Dockerfile COPYs named files only, so nothing here is needed in the image.
+.git
+.env
+backups/
+migration-backups/
+data/
+vault/
+tests/
+__pycache__/
+*.log
+*.pre-*
+*.bak-*
+*.patch

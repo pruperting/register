@@ -456,6 +456,8 @@ otherwise write "Access address not recorded". Bold labels, no headings.
 Preserve the overall project description; do not write only a recent-change log.
 The owner is a hobbyist home-labber: never add enterprise-style monitoring,
 resilience or process work he did not ask for.
+In INV always include: "Back up to <deploy-dir>/backups/ before changes; scratch
+work only in /tmp, removed afterwards."
 ## AI checkpoint
 CTX/2
 {chr(10).join(s + chr(10) + '-' for s in SECTIONS)}
