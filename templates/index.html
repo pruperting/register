@@ -98,11 +98,20 @@
   <span class="dot cold"></span>older
 </div>
 
+{% if active %}
+{% for heading, items in [('favourites', favourites), ('other projects', regular)] %}
+{% if items %}
+<h2 class="project-group-title">{{ heading }} <span class="dim">({{ items|length }})</span></h2>
 <div class="grid">
-  {% for p in active %}
+  {% for p in items %}
   <div class="card">
     <div class="row1">
       <input type="checkbox" class="pick" value="{{ p.name }}" hidden>
+      <button type="button" class="favourite-toggle {{ 'is-favourite' if p.favourite else '' }}"
+              data-p="{{ p.name }}" data-favourite="{{ '1' if p.favourite else '0' }}"
+              aria-pressed="{{ 'true' if p.favourite else 'false' }}"
+              aria-label="{{ 'Remove ' if p.favourite else 'Add ' }}{{ p.name }} {{ 'from favourites' if p.favourite else 'to favourites' }}"
+              title="{{ 'Remove from favourites' if p.favourite else 'Add to favourites' }}">{{ '★' if p.favourite else '☆' }}</button>
       <span class="dot {{ p.staleness }}" title="{{ p.days_ago }} days"></span>
       <a href="{{ url_for('detail', name=p.name) }}" class="pname">{{ p.name }}</a>
     </div>
@@ -113,21 +122,48 @@
         {%- if p.handoff_count %} · {{ p.handoff_count }} handoff{{ 's' if p.handoff_count != 1 }}{% endif %}
         {%- if p.days_ago < 9000 %} · {{ p.days_ago }}d{% endif %}
       </span>
+      {% if p.has_context %}
+      <span class="dim" title="Approximate AI context / whole-handoff acceptance ceiling; human summary is extra">~{{ p.context_tokens }} / {{ checkpoint_max }} tokens</span>
+      {% endif %}
       {% if not p.has_summary %}<span class="warn">no summary</span>{% endif %}
     </div>
     {% if p.summary %}
     <p class="peek">{{ p.summary | striptags | truncate(150) }}</p>
     {% endif %}
   </div>
-  {% else %}
-  <div class="empty">No projects found. Check the vault path, then rescan.</div>
   {% endfor %}
 </div>
+{% endif %}
+{% endfor %}
+{% else %}
+<div class="empty">No projects found. Check the vault path, then rescan.</div>
+{% endif %}
 
 {% endblock %}
 
 {% block scripts %}
 <script>
+// Metadata-only preference. Handoff/checkpoint evidence is unchanged.
+document.querySelectorAll('.favourite-toggle').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const name = btn.dataset.p;
+    const favourite = btn.dataset.favourite !== '1';
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/favourite/${encodeURIComponent(name)}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({favourite}),
+      });
+      const response = await r.json();
+      if (!r.ok || response.status !== 'ok') throw new Error(response.reason || 'could not update favourite');
+      location.reload();
+    } catch (e) {
+      alert(e.message || 'could not update favourite');
+      btn.disabled = false;
+    }
+  });
+});
+
 document.getElementById('new-btn').addEventListener('click', async () => {
   const name = prompt('Project name:');
   if (!name) return;

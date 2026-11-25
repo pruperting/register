@@ -40,6 +40,22 @@ label { font-size: .78rem; color: var(--dim); display: inline-flex; gap: .35rem;
 .st-retired  { background: #232323; color: #888; border: 1px solid #383838; }
 .st-unset    { background: #1b1b1b; color: #6a6a6a; border: 1px solid #2b2b2b; }
 
+/* Project grouping, persisted favourite control, and context-size indicator. */
+.project-group-title { margin: 1.25rem 0 .5rem; }
+.project-group-title:first-of-type { margin-top: .5rem; }
+.favourite-toggle {
+  color: var(--dim); cursor: pointer; background: transparent; border: 0;
+  font-size: 1.2rem; line-height: 1; padding: .08rem .2rem;
+}
+.favourite-toggle:hover, .favourite-toggle.is-favourite { color: #facc15; }
+.favourite-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.favourite-toggle:disabled { opacity: .5; cursor: wait; }
+.budget-readout { margin: .55rem 0 .8rem; }
+.budget-readout strong { font-size: .85rem; }
+.budget-progress { display: block; width: 100%; height: .6rem; margin: .4rem 0;
+  accent-color: var(--accent); }
+.budget-progress.budget-warning { accent-color: var(--warn); }
+
 .key { display: flex; align-items: center; gap: .3rem; font-size: .72rem;
        color: var(--dim); margin-bottom: .75rem; }
 .key .dot { margin-left: .7rem; } .key .dot:first-child { margin-left: 0; }

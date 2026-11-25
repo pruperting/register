@@ -106,11 +106,15 @@ def index():
     projects = register.project_list()
     active = [p for p in projects if not p["archived"]]
     archived = [p for p in projects if p["archived"]]
+    favourites = [p for p in active if p.get("favourite", False)]
+    regular = [p for p in active if not p.get("favourite", False)]
     counts: dict[str, int] = {}
     for p in active:
         counts[p["status"] or "unset"] = counts.get(p["status"] or "unset", 0) + 1
     needs_handoff = [p for p in active if p["file_count"] and not p["handoff_count"]]
     return render_template("index.html", active=active, archived=archived,
+                           favourites=favourites, regular=regular,
+                           checkpoint_max=checkpoints.HARD_MAX_TOKENS,
                            counts=counts, statuses=register.STATUSES,
                            needs_handoff=needs_handoff,
                            unfiled=register.unfiled_groups(),
@@ -174,7 +178,10 @@ def detail(name):
     result = register.refresh_project(name)
     p = register.project(name)
     p = {**p, "checkpoint_result": result, **register.context_info(name)}
-    return render_template("detail.html", p=p, statuses=register.STATUSES)
+    return render_template("detail.html", p=p, statuses=register.STATUSES,
+                           checkpoint_max=checkpoints.HARD_MAX_TOKENS,
+                           checkpoint_warning=checkpoints.WARNING_TOKENS,
+                           checkpoint_target=min(13000, checkpoints.HARD_MAX_TOKENS - 2000))
 
 
 
@@ -274,6 +281,17 @@ def api_context(name):
 def api_status(name):
     r = register.set_status(name, (request.json or {}).get("status", ""))
     return jsonify(r), (200 if r["status"] == "ok" else 400)
+
+
+@app.route("/api/favourite/<name>", methods=["POST"])
+def api_favourite(name):
+    data = request.get_json(silent=True)
+    value = data.get("favourite") if isinstance(data, dict) else None
+    if not isinstance(value, bool):
+        return jsonify({"status": "error", "reason": "favourite must be true or false"}), 400
+    r = register.set_favourite(name, value)
+    code = 200 if r["status"] == "ok" else (404 if r.get("reason") == "project not found" else 400)
+    return jsonify(r), code
 
 
 @app.route("/api/archive/<name>", methods=["POST"])

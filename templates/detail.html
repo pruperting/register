@@ -16,6 +16,11 @@
 {% if p.description %}<p class="desc">{{ p.description }}</p>{% endif %}
 
 <div class="controls">
+  <button type="button" id="favourite-btn"
+          class="ghost sm favourite-toggle {{ 'is-favourite' if p.favourite else '' }}"
+          data-favourite="{{ '1' if p.favourite else '0' }}"
+          aria-pressed="{{ 'true' if p.favourite else 'false' }}"
+          title="{{ 'Archived favourites appear when unarchived' if p.archived else 'Toggle favourite status' }}">{{ '★ favourite' if p.favourite else '☆ add to favourites' }}</button>
   <label>status
     <select id="status-sel" data-p="{{ p.name }}">
       <option value="">unset</option>
@@ -31,9 +36,6 @@
   <button class="ghost sm"
           data-prompt="/prompt?project={{ p.name | urlencode }}"
           title="End-of-session handoff prompt with this project's current checkpoint">handoff prompt</button>
-  <button class="ghost sm"
-          data-prompt="/prompt/debrief?project={{ p.name | urlencode }}"
-          title="Full technical debrief prompt, scoped to this project — paste the result into a new AI chat">debrief prompt</button>
   <button class="ghost sm" id="rename-btn" data-p="{{ p.name }}">rename</button>
   <button class="ghost sm" id="archive-btn" data-p="{{ p.name }}"
           data-a="{{ '1' if p.archived else '0' }}">
@@ -54,8 +56,8 @@
   {% elif p.checkpoint_result.status == 'bootstrap-required' %}
   <p class="notice">This project needs a complete checkpoint. Bootstrap existing handoffs once with Gemini, or save a full checkpoint from a conversation using its project-specific handoff prompt. Existing summaries below are legacy views.</p>
   {% endif %}
-  {% if p.has_context and p.context_tokens > 15000 %}
-  <p class="notice">Large accepted checkpoint (~{{ p.context_tokens }} estimated tokens). Aim for 13,000 in the next handoff; preserve technical facts before cutting history or repetition.</p>
+  {% if p.has_context and p.context_tokens > checkpoint_warning %}
+  <p class="notice">Large AI context (~{{ p.context_tokens }} estimated tokens). Aim for {{ checkpoint_target }} on the next handoff; preserve current facts and corrections.</p>
   {% endif %}
   {% if p.summary %}<div class="md">{{ p.summary | markdown | safe }}</div>
   {% else %}<p class="dim">The complete checkpoint supplies the human summary shown here. Routine imports make no AI calls.</p>{% endif %}
@@ -64,12 +66,11 @@
 <section class="panel">
   <div class="phead2">
     <h2>AI checkpoint</h2>
-    {% if p.has_context %}<span class="dim">{{ p.context_at }} · ~{{ p.context_tokens }} tokens · {{ p.context_source_mode }}</span>{% endif %}
+    {% if p.has_context %}<span class="dim">{{ p.context_at }} · {{ p.context_source_mode }}</span>{% endif %}
     <span class="spacer"></span>
     {% if p.has_context %}
-    <button class="ghost sm" data-prompt="/api/context/{{ p.name | urlencode }}">copy full context</button>
-    <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1">download full</a>
-    <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1&amp;compact=1">download compact chat copy</a>
+    <button class="ghost sm" data-prompt="/api/context/{{ p.name | urlencode }}">copy AI context</button>
+    <a class="ghost sm" href="/api/context/{{ p.name | urlencode }}?download=1">download AI context</a>
     {% endif %}
   </div>
   {% if p.retired_sources %}
@@ -86,7 +87,17 @@
   <p class="notice">{{ p.checkpoint_result.retired_knowledge.unpaired }} retirement file(s)
     are awaiting their matching checkpoint; not yet included in the historical export.</p>
   {% endif %}
-  <p class="hint">Conversation-authored current state, DONE, corrections, decisions, OPEN/NEXT and technical anchors. Full snapshots remain immutable. The compact chat copy preserves all checkpoint items; it never changes the source. Legacy contexts are migration previews until a complete checkpoint is saved.</p>
+  {% if p.has_context %}
+  <div class="budget-readout" role="group" aria-label="Register checkpoint budget">
+    <strong>~{{ "{:,}".format(p.context_tokens) }} / {{ "{:,}".format(checkpoint_max) }} estimated tokens</strong>
+    <span class="dim">({{ ((p.context_tokens / checkpoint_max) * 100) | round(0) | int }}% of checkpoint ceiling)</span>
+    <progress class="budget-progress{{ ' budget-warning' if p.context_tokens > checkpoint_warning else '' }}"
+              value="{{ [p.context_tokens, checkpoint_max] | min }}" max="{{ checkpoint_max }}"
+              aria-label="Estimated AI context tokens out of Register checkpoint ceiling"></progress>
+    <p class="hint">Preferred handoff target {{ "{:,}".format(checkpoint_target) }}; warning above {{ "{:,}".format(checkpoint_warning) }}. This is an approximation based on the AI context only; Register validates the entire handoff (including its human summary). Downloaded context may also include an Obsidian task overlay. It is not the AI model's context window.</p>
+  </div>
+  {% endif %}
+  <p class="hint">Conversation-authored current state, DONE, corrections, decisions, OPEN/NEXT and technical anchors. Full snapshots remain immutable. Copy and download export the same complete AI context; neither changes the authoritative checkpoint. Legacy contexts are migration previews until a complete checkpoint is saved.</p>
   {% if p.has_context %}<details><summary>view checkpoint</summary><pre class="context-pre">{{ p.context }}</pre></details>{% endif %}
 </section>
 
@@ -117,6 +128,23 @@
 {% block scripts %}
 <script>
 const P = {{ p.name | tojson }};
+document.getElementById('favourite-btn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const favourite = btn.dataset.favourite !== '1';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/favourite/${encodeURIComponent(P)}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({favourite}),
+    });
+    const j = await r.json();
+    if (!r.ok || j.status !== 'ok') throw new Error(j.reason || 'failed');
+    location.reload();
+  } catch (e) {
+    alert(e.message || 'could not update favourite');
+    btn.disabled = false;
+  }
+});
 document.getElementById('status-sel').addEventListener('change', async (e) => {
   e.target.disabled = true;
   const r = await fetch(`/api/status/${encodeURIComponent(P)}`, { method:'POST',
