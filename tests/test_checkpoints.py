@@ -461,7 +461,10 @@ def test_ui_import_download_prompt_and_retired_runbook(project):
     assert response.status_code==200
     page=response.get_data(as_text=True)
     assert 'Demo is running; deploy next.' in page
-    assert 'download compact chat copy' in page and 'rb-btn' not in page
+    assert 'copy AI context' in page
+    assert 'download AI context' in page
+    assert 'download compact chat copy' not in page
+    assert 'rb-btn' not in page
     prompt=client.get('/prompt?project=Demo').get_data(as_text=True)
     assert 'based_on: '+key in prompt
     assert 'checkpoint_version: 1' in prompt
@@ -523,58 +526,186 @@ def test_herald_export_baseline_state_changes_new_tasks_and_archival(project,mon
     assert not archived['projects']
 
 
-@pytest.mark.parametrize('finish,kind', [('STOP','complete'),('MAX_TOKENS','complete'),('STOP','missing'),('STOP','empty')])
-def test_weekly_review_cli_validates_before_replacing_and_redacts(project,monkeypatch,finish,kind):
+@pytest.mark.parametrize(
+    'finish,kind',
+    [
+        ('STOP', 'complete'),
+        ('MAX_TOKENS', 'complete'),
+        ('STOP', 'missing'),
+        ('STOP', 'empty'),
+    ],
+)
+def test_weekly_review_cli_validates_before_replacing_and_redacts(
+    project, monkeypatch, finish, kind
+):
+    from datetime import date, timedelta
     from types import SimpleNamespace
     from google import genai
     from google.genai import types
-    secret='AIza'+'S'*32
-    text='\n\n'.join('## '+s+'\n'+('Review '+secret if i==0 else 'Evidence-based observation.')
-                         for i,s in enumerate(synthesise.REVIEW_SECTIONS))
-    if kind=='missing':text=text.split('## Do these three things next')[0]
-    if kind=='empty':text=text.split('## Do these three things next')[0]+'## Do these three things next\n'
-    monkeypatch.setattr(synthesise,'collect',lambda vault:('Accepted checkpoint '+secret,['Demo']))
-    monkeypatch.setenv('GEMINI_API_KEY','test')
-    monkeypatch.setattr(sys,'argv',['synthesise.py','--vault',str(reg.VAULT_PATH)])
-    response=types.GenerateContentResponse(candidates=[types.Candidate(finish_reason=finish,
-        content=types.Content(parts=[types.Part(text=text)]))])
-    calls=[]
+
+    secret = 'AIza' + 'S' * 32
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # Establish a real comparison baseline without an AI call.
+    key = snapshot(project)
+
+    monkeypatch.setattr(
+        sys, 'argv',
+        ['synthesise.py', '--vault', str(reg.VAULT_PATH)]
+    )
+
+    class BaselineDate(date):
+        @classmethod
+        def today(cls):
+            return yesterday
+
+    monkeypatch.setattr(synthesise, 'date', BaselineDate)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    synthesise.main()
+
+    root = project.parent / '_estate'
+    previous = root / f'review-{yesterday.isoformat()}.md'
+    previous_text = previous.read_text()
+
+    assert 'weekly_manifest:' in previous_text
+    assert 'Baseline only' in previous_text
+
+    monkeypatch.setattr(synthesise, 'date', date)
+
+    # A genuine new checkpoint must trigger the Gemini path.
+    snapshot(
+        project,
+        'two.md',
+        parent=key,
+        content=body(state='New recorded work ' + secret),
+    )
+
+    sections = synthesise.WEEKLY_SECTIONS
+
+    parts = [
+        '## ' + section + '\n' +
+        ('Review ' + secret if i == 0
+         else 'Evidence-based observation.')
+        for i, section in enumerate(sections)
+    ]
+
+    if kind == 'missing':
+        parts.pop()
+    elif kind == 'empty':
+        parts[-1] = '## ' + sections[-1] + '\n'
+
+    text = '\n\n'.join(parts)
+
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                finish_reason=finish,
+                content=types.Content(
+                    parts=[types.Part(text=text)]
+                ),
+            )
+        ]
+    )
+
+    calls = []
+
     def generate(**kwargs):
-        assert secret not in kwargs['contents']
-        calls.append(kwargs);return response
-    monkeypatch.setattr(genai,'Client',lambda **kw:SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
-    out=project.parent/'_estate'/('review-'+synthesise.date.today().isoformat()+'.md')
-    out.parent.mkdir();out.write_text('PREVIOUS VALID REVIEW')
-    if finish=='STOP' and kind=='complete':
+        payload = kwargs['contents']
+
+        assert secret not in payload
+        assert '[REDACTED GOOGLE API KEY]' in payload
+        assert 'BEFORE:' in payload
+        assert 'AFTER:' in payload
+        assert 'New recorded work' in payload
+
+        calls.append(kwargs)
+        return response
+
+    monkeypatch.setattr(
+        genai,
+        'Client',
+        lambda **kw: SimpleNamespace(
+            models=SimpleNamespace(generate_content=generate)
+        ),
+    )
+
+    out = root / f'review-{today.isoformat()}.md'
+
+    if finish == 'STOP' and kind == 'complete':
         synthesise.main()
-        saved=out.read_text()
-        assert 'projects_reviewed: 1' in saved and secret not in saved
+        saved = out.read_text()
+
+        assert 'projects_reviewed: 1' in saved
+        assert secret not in saved
         assert '[REDACTED GOOGLE API KEY]' in saved
-        assert all('## '+s in saved for s in synthesise.REVIEW_SECTIONS)
-        assert not out.with_name(out.name+'.tmp').exists()
-        monkeypatch.setattr(herald_status,'ESTATE_DIR',out.parent)
-        payload=herald_status.build_payload()
-        assert payload['portfolio_review']['file']==out.name
-        assert payload['portfolio_review']['age_days']==0
+        assert 'weekly_manifest:' in saved
+        assert all('## ' + s in saved for s in sections)
+        assert not out.with_name(out.name + '.tmp').exists()
+
+        monkeypatch.setattr(
+            herald_status, 'ESTATE_DIR', root
+        )
+
+        payload = herald_status.build_payload()
+
+        assert payload['portfolio_review']['file'] == out.name
+        assert payload['portfolio_review']['age_days'] == 0
+
+        # A same-day repeat must not incur another API call.
+        synthesise.main()
+        assert out.read_text() == saved
+
     else:
-        with pytest.raises(SystemExit):synthesise.main()
-        assert out.read_text()=='PREVIOUS VALID REVIEW'
-    assert len(calls)==1
+        with pytest.raises(SystemExit):
+            synthesise.main()
+
+        # Invalid output must not publish a new baseline.
+        assert not out.exists()
+
+    assert previous.read_text() == previous_text
+    assert len(calls) == 1
 
 
-def test_weekly_review_dry_run_excludes_unseeded_archived_and_estate(project,monkeypatch,capsys):
+def test_weekly_review_dry_run_excludes_unseeded_archived_and_estate(
+    project, monkeypatch, capsys
+):
     snapshot(project)
-    for slug in ('Unseeded','Archived','_estate'):
-        root=project.parent/slug;root.mkdir()
-        (root/'_project.md').write_text('---\ndescription: excluded\n---\n')
-    reg.set_archived('Archived',True)
-    monkeypatch.setattr(sys,'argv',['synthesise.py','--vault',str(reg.VAULT_PATH),'--dry-run'])
-    monkeypatch.delenv('GEMINI_API_KEY',raising=False)
-    with pytest.raises(SystemExit) as stop:synthesise.main()
-    assert stop.value.code==0
-    output=capsys.readouterr()
-    assert output.out.strip()=='Demo'
-    assert 'Unseeded' in output.err and '1 projects' in output.err
+
+    for slug in ('Unseeded', 'Archived', '_estate'):
+        root = project.parent / slug
+        root.mkdir()
+        (root / '_project.md').write_text(
+            '---\ndescription: excluded\n---\n'
+        )
+
+    reg.set_archived('Archived', True)
+
+    monkeypatch.setattr(
+        sys, 'argv',
+        [
+            'synthesise.py',
+            '--vault', str(reg.VAULT_PATH),
+            '--dry-run',
+        ],
+    )
+
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+
+    synthesise.main()
+
+    output = capsys.readouterr()
+
+    assert 'Accepted projects: Demo' in output.out
+    assert 'Excluded (unavailable): Unseeded' in output.out
+    assert 'Baseline only; recorded 1 accepted projects' in output.out
+    assert 'Archived' not in output.out
+    assert '_estate' not in output.out
+
+    estate = project.parent / '_estate'
+    assert not list(estate.glob('review-*.md'))
 
 
 def test_compression_reports_protected_overflow_without_dropping_tasks(project):
