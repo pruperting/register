@@ -395,7 +395,7 @@ def project_list() -> list[dict]:
 def get_meta(name: str) -> dict:
     path = project_dir(name) / "_project.md"
     out = {"description": "", "status": "", "repo": "", "archived": False,
-           "notes": "", "has_meta": False}
+           "favourite": False, "notes": "", "has_meta": False}
     if not path.exists():
         return out
     parsed = _read(path)
@@ -408,6 +408,7 @@ def get_meta(name: str) -> dict:
         "status": str(meta.get("status", "") or "").strip().lower(),
         "repo": str(meta.get("repo", "") or "").strip(),
         "archived": bool(meta.get("archived", False)),
+        "favourite": meta.get("favourite", False) is True,
         "notes": content.strip(),
     })
     return out
@@ -474,6 +475,15 @@ def set_archived(name: str, archived: bool) -> dict:
 
 def set_repo(name: str, repo: str) -> dict:
     return _write_meta(name, repo=(repo or "").strip())
+
+
+def set_favourite(name: str, favourite: bool) -> dict:
+    """Store dashboard preference in existing per-project metadata, not a database."""
+    if not isinstance(favourite, bool):
+        return {"status": "error", "reason": "favourite must be a boolean"}
+    if name not in all_projects():
+        return {"status": "error", "reason": "project not found"}
+    return _write_meta(name, favourite=favourite)
 
 
 # ── summaries ───────────────────────────────────────────────────────
